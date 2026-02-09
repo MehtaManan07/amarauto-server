@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 # Import your models here for autogenerate support
 from app.core.db.base import Base
 from app.modules.users.models import User
+from app.modules.raw_materials.models import RawMaterial
 
 # Load .env
 load_dotenv()

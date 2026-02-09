@@ -2,7 +2,18 @@
 
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Union
+from typing import Union, List, Optional
+
+
+def search_words(term: Optional[str]) -> List[str]:
+    """
+    Split a search term into words for powerful multi-field search.
+    Each word can match any searchable field; all words must match (AND semantics).
+    Whitespace and empty segments are ignored.
+    """
+    if not term or not isinstance(term, str):
+        return []
+    return [w.strip() for w in term.strip().split() if w.strip()]
 
 
 def calculate_due_date(invoice_date: date, days: int = 15) -> date:

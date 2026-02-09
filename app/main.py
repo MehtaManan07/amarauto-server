@@ -9,7 +9,8 @@ from app.core.response_interceptor import (
     CustomAPIRoute,
 )
 from app.core.config import config
-# from app.modules.users import router as users_router
+from app.modules.users.router import router as users_router
+from app.modules.raw_materials.router import router as raw_materials_router
 # from app.modules.products import router as products_router
 # from app.modules.containers import router as containers_router
 # from app.modules.container_products import router as container_products_router
@@ -85,7 +86,8 @@ app.add_middleware(
 app.add_middleware(SuccessResponseInterceptor)
 
 # Include routers with /api prefix
-# app.include_router(users_router, prefix="/api")
+app.include_router(users_router, prefix="/api")
+app.include_router(raw_materials_router, prefix="/api")
 # app.include_router(products_router, prefix="/api")
 # app.include_router(containers_router, prefix="/api")
 # app.include_router(container_products_router, prefix="/api")

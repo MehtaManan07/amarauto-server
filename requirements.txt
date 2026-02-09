@@ -51,6 +51,7 @@ MarkupSafe==3.0.2
 matplotlib-inline==0.1.7
 packaging==25.0
 parso==0.8.5
+passlib==1.7.4
 pexpect==4.9.0
 pillow==12.0.0
 pip-tools==7.5.2
