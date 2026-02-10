@@ -12,7 +12,14 @@ from app.core.db.engine import run_db
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.utils import search_words
 from .models import RawMaterial
-from .schemas import RawMaterialCreateDto, RawMaterialUpdateDto, RawMaterialResponse, StockCheckResponse
+from .schemas import (
+    RawMaterialCreateDto,
+    RawMaterialUpdateDto,
+    RawMaterialResponse,
+    StockCheckResponse,
+    BulkUploadResponse,
+    BulkUploadItemResult,
+)
 
 
 def _to_response(row: RawMaterial) -> RawMaterialResponse:
@@ -66,6 +73,83 @@ class RawMaterialService:
             db.refresh(row)
             return _to_response(row)
         return await run_db(_create)
+
+    @staticmethod
+    async def bulk_create(items: List[RawMaterialCreateDto]) -> BulkUploadResponse:
+        """
+        Bulk create raw materials. Each item is processed independently;
+        conflicts and errors are captured per-item and don't fail the entire batch.
+        """
+        def _bulk_create(db: Session) -> BulkUploadResponse:
+            results: List[BulkUploadItemResult] = []
+            success_count = 0
+            failure_count = 0
+
+            for dto in items:
+                try:
+                    # Check for existing material
+                    existing = db.execute(
+                        select(RawMaterial).where(
+                            RawMaterial.name == dto.name,
+                            RawMaterial.deleted_at.is_(None)
+                        )
+                    ).scalars().first()
+
+                    if existing:
+                        results.append(BulkUploadItemResult(
+                            name=dto.name,
+                            success=False,
+                            error="Material with this name already exists",
+                            data=None,
+                        ))
+                        failure_count += 1
+                        continue
+
+                    # Create new material
+                    row = RawMaterial(
+                        name=dto.name,
+                        unit_type=dto.unit_type,
+                        material_type=dto.material_type,
+                        group=dto.group,
+                        min_stock_req=dto.min_stock_req,
+                        min_order_qty=dto.min_order_qty,
+                        stock_qty=dto.stock_qty,
+                        gst=dto.gst,
+                        hsn=dto.hsn,
+                        purchase_price=dto.purchase_price,
+                        description=dto.description,
+                        treat_as_consume=dto.treat_as_consume,
+                        is_active=dto.is_active,
+                    )
+                    db.add(row)
+                    db.flush()
+                    db.refresh(row)
+
+                    results.append(BulkUploadItemResult(
+                        name=dto.name,
+                        success=True,
+                        error=None,
+                        data=_to_response(row),
+                    ))
+                    success_count += 1
+
+                except Exception as e:
+                    results.append(BulkUploadItemResult(
+                        name=dto.name,
+                        success=False,
+                        error=str(e),
+                        data=None,
+                    ))
+                    failure_count += 1
+
+            return BulkUploadResponse(
+                total=len(items),
+                success_count=success_count,
+                failure_count=failure_count,
+                results=results,
+            )
+
+        return await run_db(_bulk_create)
 
     @staticmethod
     async def find_all(search: Optional[str] = None) -> List[RawMaterialResponse]:

@@ -79,3 +79,25 @@ class StockCheckResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class BulkUploadItemResult(BaseModel):
+    """Result for a single item in bulk upload."""
+    name: str
+    success: bool
+    error: Optional[str] = None
+    data: Optional[RawMaterialResponse] = None
+
+    class Config:
+        from_attributes = True
+
+
+class BulkUploadResponse(BaseModel):
+    """Overall result of bulk upload operation."""
+    total: int
+    success_count: int
+    failure_count: int
+    results: list[BulkUploadItemResult]
+
+    class Config:
+        from_attributes = True

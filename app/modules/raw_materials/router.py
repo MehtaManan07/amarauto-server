@@ -13,6 +13,7 @@ from .schemas import (
     RawMaterialUpdateDto,
     RawMaterialResponse,
     StockCheckResponse,
+    BulkUploadResponse,
 )
 
 router = APIRouter(prefix="/raw-materials", tags=["raw-materials"])
@@ -25,6 +26,18 @@ async def create_raw_material(
 ):
     """Add a raw material."""
     return await RawMaterialService.create(dto)
+
+
+@router.post("/bulk", response_model=BulkUploadResponse)
+async def bulk_upload_raw_materials(
+    items: List[RawMaterialCreateDto],
+    current_user: TokenData = Depends(require_any_role),
+):
+    """
+    Bulk upload raw materials. Each item is processed independently.
+    Returns detailed results showing successes and failures for each item.
+    """
+    return await RawMaterialService.bulk_create(items)
 
 
 @router.get("", response_model=List[RawMaterialResponse])

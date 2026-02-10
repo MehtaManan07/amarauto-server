@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from app.core.db.base import Base
 from app.modules.users.models import User
 from app.modules.raw_materials.models import RawMaterial
+from app.modules.products.models import Product
 
 # Load .env
 load_dotenv()
