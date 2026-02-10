@@ -2,7 +2,7 @@
 Raw materials service. find_all with powerful search; check_stock for low/below-min.
 """
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -11,8 +11,8 @@ from decimal import Decimal
 from app.core.db.engine import run_db
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.utils import search_words
-from .models import RawMaterial
-from .schemas import (
+from app.modules.raw_materials.models import RawMaterial
+from app.modules.raw_materials.schemas import (
     RawMaterialCreateDto,
     RawMaterialUpdateDto,
     RawMaterialResponse,
@@ -44,7 +44,42 @@ def _to_response(row: RawMaterial) -> RawMaterialResponse:
     )
 
 
+ALLOWED_FIELD_OPTIONS_FIELDS = ("unit_type", "material_type", "group")
+
+
 class RawMaterialService:
+    @staticmethod
+    async def get_field_options(
+        fields: Optional[List[str]] = None,
+    ) -> Dict[str, List[str]]:
+        """
+        Return distinct non-null values for selectable fields (unit_type, material_type, group)
+        from non-deleted raw materials. Used by frontend for dropdowns; users can still enter new values.
+        """
+        requested = (
+            [f for f in fields if f in ALLOWED_FIELD_OPTIONS_FIELDS]
+            if fields
+            else list(ALLOWED_FIELD_OPTIONS_FIELDS)
+        )
+        if not requested:
+            return {}
+
+        def _get_options(db: Session) -> Dict[str, List[str]]:
+            out: Dict[str, List[str]] = {}
+            for field in requested:
+                col = getattr(RawMaterial, field)
+                stmt = (
+                    select(col)
+                    .where(RawMaterial.deleted_at.is_(None), col.isnot(None))
+                    .distinct()
+                    .order_by(col)
+                )
+                result = db.execute(stmt)
+                out[field] = list(result.scalars().all())
+            return out
+
+        return await run_db(_get_options)
+
     @staticmethod
     async def create(dto: RawMaterialCreateDto) -> RawMaterialResponse:
         def _create(db: Session) -> RawMaterialResponse:

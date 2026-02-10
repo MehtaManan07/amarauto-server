@@ -2,26 +2,12 @@
 Raw material model. Schema inferred from data/raw-materials.csv.
 """
 
-import enum
-from app.modules.users.models import SQLEnum
 from sqlalchemy import String, Numeric, Boolean, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from typing import Optional
 from decimal import Decimal
 
 from app.core.db.base import BaseModel
-
-
-class UnitType(str, enum.Enum):
-    """Unit type enum"""
-
-    PC = "pieces"
-    KG = "kg"
-    SET = "set"
-    M = "meter"
-    CM = "centimeter"
-    MM = "millimeter"
-    IN = "inch"
 
 
 class RawMaterial(BaseModel):
@@ -35,7 +21,7 @@ class RawMaterial(BaseModel):
     name: Mapped[str] = mapped_column(
         String(255), unique=True, nullable=False, index=True
     )
-    unit_type: Mapped[UnitType] = mapped_column(SQLEnum(UnitType), nullable=False)
+    unit_type: Mapped[str] = mapped_column(String(50), nullable=False)
     material_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     group: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     min_stock_req: Mapped[Optional[Decimal]] = mapped_column(

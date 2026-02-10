@@ -1,5 +1,5 @@
 """
-Products service. find_all with powerful search; get_bom returns [] until BOM module exists.
+Products service. find_all with powerful search; get_bom uses BOM module.
 """
 
 from typing import List, Optional
@@ -21,6 +21,7 @@ from app.modules.products.schemas import (
     BulkItemResult,
     BulkCreateResponse,
 )
+from app.modules.bom.service import BOMService as BOMServiceRef
 
 
 def _to_response(row: Product) -> ProductResponse:
@@ -202,17 +203,36 @@ class ProductService:
 
     @staticmethod
     async def find_one_with_bom(product_id: int, variant: Optional[str] = None) -> ProductDetailResponse:
-        """Product by id with BOM. BOM is empty until BOM module provides it."""
+        """Product by id with BOM from BOM module."""
         base = await ProductService.find_one(product_id)
-        # TODO: when BOM module exists, call BOMService.get_by_product(product_id, variant)
-        bom: List[BOMLineResponse] = []
+        bom_lines = await BOMServiceRef.find_by_product(product_id, variant=variant)
+        bom: List[BOMLineResponse] = [
+            BOMLineResponse(
+                raw_material_id=l.raw_material_id,
+                raw_material_name=l.raw_material_name,
+                variant=l.variant,
+                batch_qty=l.batch_qty,
+                raw_qty=l.raw_qty,
+            )
+            for l in bom_lines
+        ]
         return ProductDetailResponse(**base.model_dump(), bom=bom)
 
     @staticmethod
     async def get_bom(product_id: int, variant: Optional[str] = None) -> List[BOMLineResponse]:
-        """Get BOM for product (and optional variant). Returns [] until BOM module exists."""
+        """Get BOM for product (and optional variant) from BOM module."""
         await ProductService.find_one(product_id)
-        return []
+        bom_lines = await BOMServiceRef.find_by_product(product_id, variant=variant)
+        return [
+            BOMLineResponse(
+                raw_material_id=l.raw_material_id,
+                raw_material_name=l.raw_material_name,
+                variant=l.variant,
+                batch_qty=l.batch_qty,
+                raw_qty=l.raw_qty,
+            )
+            for l in bom_lines
+        ]
 
     @staticmethod
     async def update(product_id: int, dto: ProductUpdateDto) -> ProductResponse:

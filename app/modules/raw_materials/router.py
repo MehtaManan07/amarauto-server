@@ -14,6 +14,7 @@ from .schemas import (
     RawMaterialResponse,
     StockCheckResponse,
     BulkUploadResponse,
+    FieldOptionsResponse,
 )
 
 router = APIRouter(prefix="/raw-materials", tags=["raw-materials"])
@@ -60,6 +61,20 @@ async def check_stock(
         below_min_only=below_min_only,
         search=search,
     )
+
+
+@router.get("/field-options", response_model=FieldOptionsResponse)
+async def get_field_options(
+    fields: Optional[str] = Query(
+        None,
+        description="Comma-separated field names: unit_type, material_type, group. Omit for all.",
+    ),
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Unique values for selectable fields. Frontend can show dropdowns; users can still enter new values."""
+    field_list = [f.strip() for f in fields.split(",")] if fields else None
+    data = await RawMaterialService.get_field_options(fields=field_list)
+    return FieldOptionsResponse(**data)
 
 
 @router.get("/{material_id}", response_model=RawMaterialResponse)

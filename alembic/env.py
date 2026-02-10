@@ -16,6 +16,7 @@ from app.core.db.base import Base
 from app.modules.users.models import User
 from app.modules.raw_materials.models import RawMaterial
 from app.modules.products.models import Product
+from app.modules.bom.models import BOMLine
 
 # Load .env
 load_dotenv()

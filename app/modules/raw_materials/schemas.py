@@ -101,3 +101,14 @@ class BulkUploadResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FieldOptionsResponse(BaseModel):
+    """Unique values per field for dropdowns (e.g. unit_type, material_type, group)."""
+
+    unit_type: Optional[list[str]] = None
+    material_type: Optional[list[str]] = None
+    group: Optional[list[str]] = None
+
+    class Config:
+        from_attributes = True
