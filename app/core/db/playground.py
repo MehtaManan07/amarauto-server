@@ -36,6 +36,9 @@ WHERE p.part_no = 'A001'
   AND bl.variant = 'BLACK';
 """
 
+QUERY = """
+select * from products where qty > 0;
+"""
 
 def run():
     with SessionLocal() as session:

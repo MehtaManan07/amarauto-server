@@ -3,7 +3,7 @@ Product DTOs. BOM lines placeholder for get BOM (filled when BOM module exists).
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from datetime import datetime
 from decimal import Decimal
 
@@ -75,6 +75,20 @@ class ProductResponse(BaseModel):
         from_attributes = True
 
 
+class ProductPaginatedResponse(BaseModel):
+    """Paginated response for products list."""
+
+    items: List[ProductResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_more: bool
+
+    class Config:
+        from_attributes = True
+
+
 class BOMLineResponse(BaseModel):
     """Single BOM line (raw material + qty). Filled by BOM module later."""
     raw_material_id: Optional[int] = None
@@ -88,8 +102,12 @@ class BOMLineResponse(BaseModel):
 
 
 class ProductDetailResponse(ProductResponse):
-    """Product with BOM. bom populated when BOM module exists."""
-    bom: List[BOMLineResponse] = []
+    """Product with BOM grouped by variant."""
+
+    bom_by_variant: Dict[str, List[BOMLineResponse]] = Field(
+        default_factory=dict,
+        description="Variant name -> list of BOM lines. Use 'Default' for variant=None.",
+    )
 
     class Config:
         from_attributes = True
@@ -109,3 +127,15 @@ class BulkCreateResponse(BaseModel):
     skipped: int = 0
     errors: int = 0
     details: List[BulkItemResult] = Field(default_factory=list)
+
+
+class ProductFieldOptionsResponse(BaseModel):
+    """Unique values per field for dropdowns (e.g. category, group, unit_of_measure)."""
+
+    category: Optional[List[str]] = None
+    group: Optional[List[str]] = None
+    unit_of_measure: Optional[List[str]] = None
+    model_name: Optional[List[str]] = None
+
+    class Config:
+        from_attributes = True

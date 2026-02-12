@@ -13,6 +13,8 @@ from .schemas import (
     ProductUpdateDto,
     ProductResponse,
     ProductDetailResponse,
+    ProductPaginatedResponse,
+    ProductFieldOptionsResponse,
     BOMLineResponse,
     BulkCreateResponse,
 )
@@ -38,13 +40,33 @@ async def bulk_create_products(
     return await ProductService.bulk_create(items)
 
 
-@router.get("", response_model=List[ProductResponse])
+@router.get("", response_model=ProductPaginatedResponse)
 async def list_products(
     search: Optional[str] = Query(None, description="Search across name, category, group, part_no, model_name, unit_of_measure (words AND'd)"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(25, ge=1, le=100, description="Items per page (max 100)"),
     current_user: TokenData = Depends(require_any_role),
 ):
-    """List products. Optional search: split into words, each word matches any field."""
-    return await ProductService.find_all(search=search)
+    """List products with pagination. Optional search. Returns items, total, page, page_size, total_pages, has_more."""
+    return await ProductService.find_all_paginated(
+        page=page,
+        page_size=page_size,
+        search=search,
+    )
+
+
+@router.get("/field-options", response_model=ProductFieldOptionsResponse)
+async def get_product_field_options(
+    fields: Optional[str] = Query(
+        None,
+        description="Comma-separated field names: category, group, unit_of_measure. Omit for all.",
+    ),
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Unique values for selectable fields. Frontend can show dropdowns; users can still enter new values."""
+    field_list = [f.strip() for f in fields.split(",")] if fields else None
+    data = await ProductService.get_field_options(fields=field_list)
+    return ProductFieldOptionsResponse(**data)
 
 
 @router.get("/{product_id}/bom", response_model=List[BOMLineResponse])

@@ -2,7 +2,7 @@
 Products service. find_all with powerful search; get_bom uses BOM module.
 """
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from app.core.db.engine import run_db
 from app.core.exceptions import ConflictError, NotFoundError
+from app.core.pagination import paginate_query, build_paginated_response
 from app.core.utils import search_words
 from app.modules.products.models import Product
 from app.modules.products.schemas import (
@@ -22,6 +23,9 @@ from app.modules.products.schemas import (
     BulkCreateResponse,
 )
 from app.modules.bom.service import BOMService as BOMServiceRef
+
+
+ALLOWED_FIELD_OPTIONS_FIELDS = ("category", "group", "unit_of_measure", "model_name")
 
 
 def _to_response(row: Product) -> ProductResponse:
@@ -81,6 +85,7 @@ class ProductService:
             db.flush()
             db.refresh(row)
             return _to_response(row)
+
         return await run_db(_create)
 
     @staticmethod
@@ -154,7 +159,9 @@ class ProductService:
                         )
                     )
             db.commit()
-            return BulkCreateResponse(added=added, skipped=skipped, errors=errors, details=details)
+            return BulkCreateResponse(
+                added=added, skipped=skipped, errors=errors, details=details
+            )
 
         return await run_db(_bulk)
 
@@ -184,7 +191,78 @@ class ProductService:
             result = db.execute(query)
             rows = result.scalars().all()
             return [_to_response(r) for r in rows]
+
         return await run_db(_find_all)
+
+    @staticmethod
+    async def find_all_paginated(
+        page: int = 1,
+        page_size: int = 25,
+        search: Optional[str] = None,
+    ) -> dict:
+        """
+        Find all products with pagination and optional search filter.
+
+        CRITICAL: Search filtering happens BEFORE pagination.
+        """
+        words = search_words(search)
+
+        def _find_all_paginated(db: Session) -> dict:
+            query = select(Product).where(Product.deleted_at.is_(None))
+            for word in words:
+                pattern = f"%{word}%"
+                query = query.where(
+                    or_(
+                        Product.name.ilike(pattern),
+                        Product.category.ilike(pattern),
+                        Product.group.ilike(pattern),
+                        Product.part_no.ilike(pattern),
+                        Product.model_name.ilike(pattern),
+                        Product.unit_of_measure.ilike(pattern),
+                    )
+                )
+            query = query.order_by(Product.created_at.desc())
+
+            products, total = paginate_query(db, query, page, page_size)
+            items = [_to_response(r) for r in products]
+            return build_paginated_response(items, total, page, page_size)
+
+        return await run_db(_find_all_paginated)
+
+    @staticmethod
+    async def get_field_options(
+        fields: Optional[List[str]] = None,
+    ) -> Dict[str, List[str]]:
+
+        requested = (
+            [f for f in fields if f in ALLOWED_FIELD_OPTIONS_FIELDS]
+            if fields
+            else list(ALLOWED_FIELD_OPTIONS_FIELDS)
+        )
+        print("requested", requested)
+
+        if not requested:
+            return {}
+
+        def _get_options(db: Session) -> Dict[str, List[str]]:
+            cols = [getattr(Product, f) for f in requested]
+
+            stmt = select(*cols).where(Product.deleted_at.is_(None))
+
+            rows = db.execute(stmt).all()
+            print("rows", len(rows))
+
+            out: Dict[str, set] = {f: set() for f in requested}
+
+            for row in rows:
+                for idx, field in enumerate(requested):
+                    value = row[idx]
+                    if value is not None:
+                        out[field].add(str(value))
+
+            return {field: sorted(values) for field, values in out.items()}
+
+        return await run_db(_get_options)
 
     @staticmethod
     async def find_one(product_id: int) -> ProductResponse:
@@ -199,27 +277,35 @@ class ProductService:
             if not row:
                 raise NotFoundError("Product", product_id)
             return _to_response(row)
+
         return await run_db(_find)
 
     @staticmethod
-    async def find_one_with_bom(product_id: int, variant: Optional[str] = None) -> ProductDetailResponse:
-        """Product by id with BOM from BOM module."""
+    async def find_one_with_bom(
+        product_id: int, variant: Optional[str] = None
+    ) -> ProductDetailResponse:
+        """Product by id with BOM grouped by variant."""
         base = await ProductService.find_one(product_id)
-        bom_lines = await BOMServiceRef.find_by_product(product_id, variant=variant)
-        bom: List[BOMLineResponse] = [
-            BOMLineResponse(
+        bom_lines = await BOMServiceRef.find_by_product(product_id, variant=None)
+        bom_by_variant: dict = {}
+        for l in bom_lines:
+            key = l.variant if l.variant else "Default"
+            line = BOMLineResponse(
                 raw_material_id=l.raw_material_id,
                 raw_material_name=l.raw_material_name,
                 variant=l.variant,
                 batch_qty=l.batch_qty,
                 raw_qty=l.raw_qty,
             )
-            for l in bom_lines
-        ]
-        return ProductDetailResponse(**base.model_dump(), bom=bom)
+            if key not in bom_by_variant:
+                bom_by_variant[key] = []
+            bom_by_variant[key].append(line)
+        return ProductDetailResponse(**base.model_dump(), bom_by_variant=bom_by_variant)
 
     @staticmethod
-    async def get_bom(product_id: int, variant: Optional[str] = None) -> List[BOMLineResponse]:
+    async def get_bom(
+        product_id: int, variant: Optional[str] = None
+    ) -> List[BOMLineResponse]:
         """Get BOM for product (and optional variant) from BOM module."""
         await ProductService.find_one(product_id)
         bom_lines = await BOMServiceRef.find_by_product(product_id, variant=variant)
@@ -252,6 +338,7 @@ class ProductService:
             db.flush()
             db.refresh(row)
             return _to_response(row)
+
         return await run_db(_update)
 
     @staticmethod
@@ -263,4 +350,5 @@ class ProductService:
                 raise NotFoundError("Product", product_id)
             row.deleted_at = datetime.utcnow()
             db.flush()
+
         await run_db(_remove)
