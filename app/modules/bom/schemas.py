@@ -12,6 +12,7 @@ class BOMLineCreateDto(BaseModel):
     product_id: int
     raw_material_id: int
     variant: Optional[str] = Field(None, max_length=100)
+    stage_number: int = Field(default=1, ge=1, description="Production stage (1=first)")
     batch_qty: Decimal = Field(default=Decimal("1"), ge=0)
     raw_qty: Decimal = Field(..., ge=0)
 
@@ -23,6 +24,7 @@ class BOMLineUpdateDto(BaseModel):
     product_id: Optional[int] = None
     raw_material_id: Optional[int] = None
     variant: Optional[str] = Field(None, max_length=100)
+    stage_number: Optional[int] = Field(None, ge=1)
     batch_qty: Optional[Decimal] = Field(None, ge=0)
     raw_qty: Optional[Decimal] = Field(None, ge=0)
 
@@ -63,6 +65,7 @@ class BOMLineResponse(BaseModel):
     product_part_no: Optional[str] = None
     raw_material_name: Optional[str] = None
     variant: Optional[str] = None
+    stage_number: int = 1
     batch_qty: Decimal
     raw_qty: Decimal
     created_at: datetime

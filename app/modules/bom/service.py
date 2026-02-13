@@ -38,6 +38,7 @@ def _to_response(
         product_part_no=product_part_no,
         raw_material_name=raw_material_name,
         variant=row.variant,
+        stage_number=getattr(row, "stage_number", 1),
         batch_qty=row.batch_qty,
         raw_qty=row.raw_qty,
         created_at=row.created_at,
@@ -69,6 +70,7 @@ class BOMService:
                 product_id=dto.product_id,
                 raw_material_id=dto.raw_material_id,
                 variant=normalize_unicode(dto.variant) if dto.variant else dto.variant,
+                stage_number=dto.stage_number,
                 batch_qty=dto.batch_qty,
                 raw_qty=dto.raw_qty,
             )

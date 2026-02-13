@@ -18,6 +18,7 @@ from app.modules.inventory_logs.router import router as inventory_logs_router
 from app.modules.job_rates.router import router as job_rates_router
 from app.modules.work_logs.router import router as work_logs_router
 from app.modules.parties.router import router as parties_router
+from app.modules.production.router import router as production_router
 
 # Configure logging to output to console
 logging.basicConfig(
@@ -94,6 +95,7 @@ app.include_router(inventory_logs_router, prefix="/api")
 app.include_router(job_rates_router, prefix="/api")
 app.include_router(work_logs_router, prefix="/api")
 app.include_router(parties_router, prefix="/api")
+app.include_router(production_router, prefix="/api")
 
 
 @app.get("/demo")
