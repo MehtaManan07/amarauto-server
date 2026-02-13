@@ -11,7 +11,7 @@ from decimal import Decimal
 from app.core.db.engine import run_db
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.pagination import paginate_query, build_paginated_response
-from app.core.utils import search_words
+from app.core.utils import search_words, normalize_unicode
 from app.modules.products.models import Product
 from app.modules.products.schemas import (
     ProductCreateDto,
@@ -65,21 +65,21 @@ class ProductService:
             if existing.scalars().first():
                 raise ConflictError("Product already exists with this part_no")
             row = Product(
-                name=dto.name,
-                category=dto.category,
-                group=dto.group,
+                name=normalize_unicode(dto.name) or dto.name,
+                category=normalize_unicode(dto.category) if dto.category else dto.category,
+                group=normalize_unicode(dto.group) if dto.group else dto.group,
                 mrp=dto.mrp,
                 qty=dto.qty,
                 gst=dto.gst,
                 hsn=dto.hsn,
                 part_no=dto.part_no,
-                model_name=dto.model_name,
+                model_name=normalize_unicode(dto.model_name) if dto.model_name else dto.model_name,
                 is_active=dto.is_active,
                 product_image=dto.product_image,
                 distributor_price=dto.distributor_price,
                 dealer_price=dto.dealer_price,
                 retail_price=dto.retail_price,
-                unit_of_measure=dto.unit_of_measure,
+                unit_of_measure=normalize_unicode(dto.unit_of_measure) if dto.unit_of_measure else dto.unit_of_measure,
             )
             db.add(row)
             db.flush()
@@ -121,21 +121,21 @@ class ProductService:
                         )
                         continue
                     row = Product(
-                        name=dto.name,
-                        category=dto.category,
-                        group=dto.group,
+                        name=normalize_unicode(dto.name) or dto.name,
+                        category=normalize_unicode(dto.category) if dto.category else dto.category,
+                        group=normalize_unicode(dto.group) if dto.group else dto.group,
                         mrp=dto.mrp,
                         qty=dto.qty,
                         gst=dto.gst,
                         hsn=dto.hsn,
                         part_no=dto.part_no,
-                        model_name=dto.model_name,
+                        model_name=normalize_unicode(dto.model_name) if dto.model_name else dto.model_name,
                         is_active=dto.is_active,
                         product_image=dto.product_image,
                         distributor_price=dto.distributor_price,
                         dealer_price=dto.dealer_price,
                         retail_price=dto.retail_price,
-                        unit_of_measure=dto.unit_of_measure,
+                        unit_of_measure=normalize_unicode(dto.unit_of_measure) if dto.unit_of_measure else dto.unit_of_measure,
                     )
                     db.add(row)
                     db.flush()
@@ -333,7 +333,10 @@ class ProductService:
             if not row:
                 raise NotFoundError("Product", product_id)
             data = dto.model_dump(exclude_unset=True)
+            text_fields = ("name", "category", "group", "model_name", "unit_of_measure")
             for k, v in data.items():
+                if k in text_fields and isinstance(v, str):
+                    v = normalize_unicode(v) or v
                 setattr(row, k, v)
             db.flush()
             db.refresh(row)

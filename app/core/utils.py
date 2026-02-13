@@ -1,8 +1,29 @@
 """Core utility functions for the application"""
 
+import unicodedata
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Union, List, Optional
+
+
+def normalize_unicode(text: Optional[str]) -> Optional[str]:
+    """
+    Normalize Unicode text to NFC form for consistent search and storage.
+    Gujarati and other Indic scripts can have multiple representations (base + combining marks);
+    NFC ensures consistent matching and storage.
+    """
+    if text is None or not isinstance(text, str):
+        return text
+    return unicodedata.normalize("NFC", text)
+
+
+def normalize_text_fields(data: dict, keys: tuple[str, ...]) -> dict:
+    """Normalize string values for given keys in a dict. Use when persisting text that may contain Gujarati/Unicode."""
+    out = dict(data)
+    for k in keys:
+        if k in out and isinstance(out[k], str):
+            out[k] = normalize_unicode(out[k]) or out[k]
+    return out
 
 
 def search_words(term: Optional[str]) -> List[str]:
@@ -10,10 +31,12 @@ def search_words(term: Optional[str]) -> List[str]:
     Split a search term into words for powerful multi-field search.
     Each word can match any searchable field; all words must match (AND semantics).
     Whitespace and empty segments are ignored.
+    Supports Gujarati and other Unicode scripts; normalizes to NFC for consistent matching.
     """
     if not term or not isinstance(term, str):
         return []
-    return [w.strip() for w in term.strip().split() if w.strip()]
+    normalized = normalize_unicode(term.strip())
+    return [normalize_unicode(w.strip()) for w in normalized.split() if w.strip()]
 
 
 def calculate_due_date(invoice_date: date, days: int = 15) -> date:

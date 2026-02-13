@@ -8,7 +8,13 @@ from fastapi import APIRouter, Depends, Query
 from app.core.response_interceptor import skip_interceptor
 from app.modules.users.auth import TokenData, require_any_role
 from .service import BOMService
-from .schemas import BOMLineCreateDto, BOMLineUpdateDto, BOMLineResponse
+from .schemas import (
+    BOMLineCreateDto,
+    BOMLineUpdateDto,
+    BOMLineResponse,
+    BOMPaginatedResponse,
+    ProductionCalcResponse,
+)
 
 router = APIRouter(prefix="/bom", tags=["bom"])
 
@@ -22,18 +28,48 @@ async def create_bom_line(
     return await BOMService.create(dto)
 
 
-@router.get("", response_model=List[BOMLineResponse])
+@router.get("", response_model=BOMPaginatedResponse)
 async def list_bom_lines(
     search: Optional[str] = Query(None, description="Search raw material name, variant (words AND'd)"),
     product_id: Optional[int] = Query(None, description="Filter by product"),
+    raw_material_id: Optional[int] = Query(None, description="Filter by raw material"),
     variant: Optional[str] = Query(None, description="Filter by variant e.g. colour"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(25, ge=1, le=1000, description="Items per page (max 1000)"),
     current_user: TokenData = Depends(require_any_role),
 ):
-    """List BOM lines. Optional search and product_id / variant filters."""
-    return await BOMService.find_all(
+    """List BOM lines with pagination. Optional search and product_id / raw_material_id / variant filters."""
+    return await BOMService.find_all_paginated(
+        page=page,
+        page_size=page_size,
         search=search,
         product_id=product_id,
+        raw_material_id=raw_material_id,
         variant=variant,
+    )
+
+
+@router.get("/variants", response_model=List[str])
+async def get_bom_variants(
+    product_id: int = Query(..., description="Product ID to get variants for"),
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Get distinct variants for a product from BOM lines."""
+    return await BOMService.get_variants(product_id)
+
+
+@router.get("/production-calc", response_model=ProductionCalcResponse)
+async def get_production_calc(
+    product_id: int = Query(..., description="Product ID"),
+    variant: Optional[str] = Query(None, description="Variant (e.g. colour)"),
+    quantity: int = Query(..., ge=1, description="Quantity to produce"),
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Calculate material requirements and order cost for producing units."""
+    return await BOMService.get_production_calc(
+        product_id=product_id,
+        variant=variant,
+        quantity=quantity,
     )
 
 

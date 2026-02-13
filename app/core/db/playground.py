@@ -37,7 +37,7 @@ WHERE p.part_no = 'A001'
 """
 
 QUERY = """
-select * from products where qty > 0;
+select count(*) from bom_lines;
 """
 
 def run():

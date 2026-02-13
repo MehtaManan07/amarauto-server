@@ -27,6 +27,13 @@ class RawMaterialCreateDto(BaseModel):
         from_attributes = True
 
 
+class AdjustStockRequest(BaseModel):
+    """Request body for adjust-stock endpoint."""
+
+    quantity_delta: Decimal
+    notes: Optional[str] = None
+
+
 class RawMaterialUpdateDto(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     unit_type: Optional[str] = Field(None, max_length=50)
@@ -67,6 +74,17 @@ class RawMaterialResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class RawMaterialPaginatedResponse(BaseModel):
+    """Paginated response for raw materials list."""
+
+    items: list[RawMaterialResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_more: bool
 
 
 class StockCheckResponse(BaseModel):

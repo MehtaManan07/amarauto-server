@@ -12,9 +12,11 @@ from .schemas import (
     RawMaterialCreateDto,
     RawMaterialUpdateDto,
     RawMaterialResponse,
+    RawMaterialPaginatedResponse,
     StockCheckResponse,
     BulkUploadResponse,
     FieldOptionsResponse,
+    AdjustStockRequest,
 )
 
 router = APIRouter(prefix="/raw-materials", tags=["raw-materials"])
@@ -41,13 +43,19 @@ async def bulk_upload_raw_materials(
     return await RawMaterialService.bulk_create(items)
 
 
-@router.get("", response_model=List[RawMaterialResponse])
+@router.get("", response_model=RawMaterialPaginatedResponse)
 async def list_raw_materials(
     search: Optional[str] = Query(None, description="Search across name, unit_type, material_type, group, description (words AND'd)"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(25, ge=1, le=1000, description="Items per page (max 1000)"),
     current_user: TokenData = Depends(require_any_role),
 ):
-    """List raw materials. Optional search: split into words, each word matches any field."""
-    return await RawMaterialService.find_all(search=search)
+    """List raw materials with pagination. Optional search. Returns items, total, page, page_size, total_pages, has_more."""
+    return await RawMaterialService.find_all_paginated(
+        page=page,
+        page_size=page_size,
+        search=search,
+    )
 
 
 @router.get("/check-stock", response_model=List[StockCheckResponse])
@@ -75,6 +83,21 @@ async def get_field_options(
     field_list = [f.strip() for f in fields.split(",")] if fields else None
     data = await RawMaterialService.get_field_options(fields=field_list)
     return FieldOptionsResponse(**data)
+
+
+@router.post("/{material_id}/adjust-stock", response_model=RawMaterialResponse)
+async def adjust_stock(
+    material_id: int,
+    dto: AdjustStockRequest,
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Adjust stock (add or remove) and create inventory log. Delta > 0 = add, Delta < 0 = remove."""
+    return await RawMaterialService.adjust_stock(
+        material_id=material_id,
+        quantity_delta=dto.quantity_delta,
+        notes=dto.notes,
+        user_id=current_user.user_id,
+    )
 
 
 @router.get("/{material_id}", response_model=RawMaterialResponse)

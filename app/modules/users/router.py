@@ -11,8 +11,6 @@ from .schemas import (
     CreateUserDto,
     UpdateUserDto,
     UserResponse,
-    RegisterRequest,
-    RegisterResponse,
     LoginRequest,
     LoginResponse,
 )
@@ -24,12 +22,6 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 # --- Auth ---
 
-@router.post("/register", response_model=RegisterResponse)
-async def register(dto: RegisterRequest):
-    """Register a new user. Returns user + JWT."""
-    return await UsersService.register(dto)
-
-
 @router.post("/login", response_model=LoginResponse)
 async def login(dto: LoginRequest):
     """Login with username/password. Returns user + JWT."""
@@ -37,6 +29,15 @@ async def login(dto: LoginRequest):
 
 
 # --- Users (protected) ---
+
+@router.post("", response_model=UserResponse)
+async def create_user(
+    dto: CreateUserDto,
+    current_user: TokenData = Depends(require_admin),
+):
+    """Create a new user (Admin only). No self-registration."""
+    return await UsersService.create_by_admin(dto)
+
 
 @router.get("", response_model=List[UserResponse])
 async def list_users(

@@ -4,7 +4,7 @@ Schema inferred from data/bom-detail.csv.
 """
 
 from sqlalchemy import String, Numeric, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional
 from decimal import Decimal
 
@@ -36,3 +36,6 @@ class BOMLine(BaseModel):
     raw_qty: Mapped[Decimal] = mapped_column(
         Numeric(15, 2), nullable=False,
     )
+
+    product: Mapped["Product"] = relationship("Product", foreign_keys=[product_id])
+    raw_material: Mapped["RawMaterial"] = relationship("RawMaterial", foreign_keys=[raw_material_id])

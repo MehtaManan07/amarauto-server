@@ -10,8 +10,10 @@ from decimal import Decimal
 
 from app.core.db.engine import run_db
 from app.core.exceptions import ConflictError, NotFoundError
-from app.core.utils import search_words
+from app.core.pagination import paginate_query, build_paginated_response
+from app.core.utils import search_words, normalize_unicode
 from app.modules.raw_materials.models import RawMaterial
+from app.modules.inventory_logs.models import InventoryLog, LogType
 from app.modules.raw_materials.schemas import (
     RawMaterialCreateDto,
     RawMaterialUpdateDto,
@@ -89,17 +91,17 @@ class RawMaterialService:
             if existing.scalars().first():
                 raise ConflictError("Raw material already exists with this name")
             row = RawMaterial(
-                name=dto.name,
+                name=normalize_unicode(dto.name) or dto.name,
                 unit_type=dto.unit_type,
-                material_type=dto.material_type,
-                group=dto.group,
+                material_type=normalize_unicode(dto.material_type) if dto.material_type else dto.material_type,
+                group=normalize_unicode(dto.group) if dto.group else dto.group,
                 min_stock_req=dto.min_stock_req,
                 min_order_qty=dto.min_order_qty,
                 stock_qty=dto.stock_qty,
                 gst=dto.gst,
                 hsn=dto.hsn,
                 purchase_price=dto.purchase_price,
-                description=dto.description,
+                description=normalize_unicode(dto.description) if dto.description else dto.description,
                 treat_as_consume=dto.treat_as_consume,
                 is_active=dto.is_active,
             )
@@ -142,17 +144,17 @@ class RawMaterialService:
 
                     # Create new material
                     row = RawMaterial(
-                        name=dto.name,
+                        name=normalize_unicode(dto.name) or dto.name,
                         unit_type=dto.unit_type,
-                        material_type=dto.material_type,
-                        group=dto.group,
+                        material_type=normalize_unicode(dto.material_type) if dto.material_type else dto.material_type,
+                        group=normalize_unicode(dto.group) if dto.group else dto.group,
                         min_stock_req=dto.min_stock_req,
                         min_order_qty=dto.min_order_qty,
                         stock_qty=dto.stock_qty,
                         gst=dto.gst,
                         hsn=dto.hsn,
                         purchase_price=dto.purchase_price,
-                        description=dto.description,
+                        description=normalize_unicode(dto.description) if dto.description else dto.description,
                         treat_as_consume=dto.treat_as_consume,
                         is_active=dto.is_active,
                     )
@@ -214,6 +216,37 @@ class RawMaterialService:
         return await run_db(_find_all)
 
     @staticmethod
+    async def find_all_paginated(
+        page: int = 1,
+        page_size: int = 25,
+        search: Optional[str] = None,
+    ) -> dict:
+        """
+        Find all raw materials with pagination and optional search filter.
+        """
+        words = search_words(search)
+
+        def _find_all_paginated(db: Session) -> dict:
+            query = select(RawMaterial).where(RawMaterial.deleted_at.is_(None))
+            for word in words:
+                pattern = f"%{word}%"
+                query = query.where(
+                    or_(
+                        RawMaterial.name.ilike(pattern),
+                        RawMaterial.unit_type.ilike(pattern),
+                        RawMaterial.material_type.ilike(pattern),
+                        RawMaterial.group.ilike(pattern),
+                        RawMaterial.description.ilike(pattern),
+                    )
+                )
+            query = query.order_by(RawMaterial.created_at.desc())
+            rows, total = paginate_query(db, query, page, page_size)
+            items = [_to_response(r) for r in rows]
+            return build_paginated_response(items, total or 0, page, page_size)
+
+        return await run_db(_find_all_paginated)
+
+    @staticmethod
     async def find_one(material_id: int) -> RawMaterialResponse:
         def _find(db: Session) -> RawMaterialResponse:
             result = db.execute(
@@ -241,12 +274,67 @@ class RawMaterialService:
             if not row:
                 raise NotFoundError("RawMaterial", material_id)
             data = dto.model_dump(exclude_unset=True)
+            text_fields = ("name", "material_type", "group", "description")
             for k, v in data.items():
+                if k in text_fields and isinstance(v, str):
+                    v = normalize_unicode(v) or v
                 setattr(row, k, v)
             db.flush()
             db.refresh(row)
             return _to_response(row)
         return await run_db(_update)
+
+    @staticmethod
+    async def adjust_stock(
+        material_id: int,
+        quantity_delta: Decimal,
+        notes: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> RawMaterialResponse:
+        """
+        Adjust stock by delta (positive=add, negative=remove), create inventory log.
+        Raises if new_qty would be negative.
+        """
+
+        def _adjust(db: Session) -> RawMaterialResponse:
+            result = db.execute(
+                select(RawMaterial).where(
+                    RawMaterial.id == material_id,
+                    RawMaterial.deleted_at.is_(None),
+                )
+            )
+            row = result.scalar_one_or_none()
+            if not row:
+                raise NotFoundError("RawMaterial", material_id)
+            previous_qty = row.stock_qty
+            new_qty = previous_qty + quantity_delta
+            if new_qty < 0:
+                raise ConflictError(
+                    f"Cannot reduce stock by {abs(quantity_delta)}: current stock is {previous_qty}"
+                )
+            # Determine log type
+            if quantity_delta > 0:
+                log_type = LogType.ADD
+            elif quantity_delta < 0:
+                log_type = LogType.REMOVE
+            else:
+                log_type = LogType.ADJUST
+            row.stock_qty = new_qty
+            log = InventoryLog(
+                raw_material_id=material_id,
+                user_id=user_id,
+                type=log_type.value,
+                quantity_delta=quantity_delta,
+                previous_qty=previous_qty,
+                new_qty=new_qty,
+                notes=notes,
+            )
+            db.add(log)
+            db.flush()
+            db.refresh(row)
+            return _to_response(row)
+
+        return await run_db(_adjust)
 
     @staticmethod
     async def remove(material_id: int) -> None:

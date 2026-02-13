@@ -31,6 +31,7 @@ class UpdateUserDto(BaseModel):
     phone: Optional[str] = Field(None, max_length=20)
     job: Optional[str] = Field(None, max_length=255)
     status: Optional[Status] = None
+    password: Optional[str] = Field(None, min_length=1)
 
     class Config:
         from_attributes = True

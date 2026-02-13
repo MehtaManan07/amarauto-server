@@ -14,14 +14,8 @@ from app.modules.raw_materials.router import router as raw_materials_router
 from app.modules.products.router import router as products_router
 from app.modules.bom.router import router as bom_router
 from app.modules.dashboard.router import router as dashboard_router
-# from app.modules.containers import router as containers_router
-# from app.modules.container_products import router as container_products_router
-# from app.modules.contacts import router as contacts_router
-# from app.modules.transactions import router as transactions_router
-# from app.modules.inventory_logs import router as inventory_logs_router
-# from app.modules.payments import router as payments_router
-# from app.modules.settings import router as settings_router
-# from app.modules.vendor_product_skus import router as vendor_skus_router
+from app.modules.inventory_logs.router import router as inventory_logs_router
+from app.modules.job_rates.router import router as job_rates_router
 
 # Configure logging to output to console
 logging.basicConfig(
@@ -41,18 +35,18 @@ async def lifespan(app: FastAPI):
     Application lifespan manager.
     """
     from app.core.db.engine import check_database_connection
-    
+
     logger.info("Starting MyStock API...")
     logger.info(f"Connecting to Turso database: {config.turso_database_url}")
-    
+
     # Verify database connection on startup
     if await check_database_connection():
         logger.info("Database connection verified successfully")
     else:
         logger.error("Failed to connect to database!")
-    
+
     yield  # App runs here
-    
+
     # Cleanup on shutdown
     logger.info("Shutting down MyStock API...")
 
@@ -94,14 +88,8 @@ app.include_router(raw_materials_router, prefix="/api")
 app.include_router(products_router, prefix="/api")
 app.include_router(bom_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
-# app.include_router(containers_router, prefix="/api")
-# app.include_router(container_products_router, prefix="/api")
-# app.include_router(contacts_router, prefix="/api")
-# app.include_router(transactions_router, prefix="/api")
-# app.include_router(inventory_logs_router, prefix="/api")
-# app.include_router(payments_router, prefix="/api")
-# app.include_router(settings_router, prefix="/api")
-# app.include_router(vendor_skus_router, prefix="/api")
+app.include_router(inventory_logs_router, prefix="/api")
+app.include_router(job_rates_router, prefix="/api")
 
 
 @app.get("/demo")

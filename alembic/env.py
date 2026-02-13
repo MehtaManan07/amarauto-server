@@ -17,6 +17,8 @@ from app.modules.users.models import User
 from app.modules.raw_materials.models import RawMaterial
 from app.modules.products.models import Product
 from app.modules.bom.models import BOMLine
+from app.modules.inventory_logs.models import InventoryLog
+from app.modules.job_rates.models import JobRate
 
 # Load .env
 load_dotenv()

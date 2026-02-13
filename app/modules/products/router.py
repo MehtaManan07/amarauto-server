@@ -44,7 +44,7 @@ async def bulk_create_products(
 async def list_products(
     search: Optional[str] = Query(None, description="Search across name, category, group, part_no, model_name, unit_of_measure (words AND'd)"),
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    page_size: int = Query(25, ge=1, le=100, description="Items per page (max 100)"),
+    page_size: int = Query(25, ge=1, le=1000, description="Items per page (max 1000)"),
     current_user: TokenData = Depends(require_any_role),
 ):
     """List products with pagination. Optional search. Returns items, total, page, page_size, total_pages, has_more."""

@@ -9,15 +9,13 @@ from datetime import datetime
 
 from app.core.db.engine import run_db
 from app.core.exceptions import ConflictError, NotFoundError, UnauthorizedError
-from app.core.utils import search_words
+from app.core.utils import search_words, normalize_text_fields
 from app.modules.users.auth import AuthService
 from app.modules.users.models import User, Role
 from app.modules.users.schemas import (
     CreateUserDto,
     UpdateUserDto,
     UserResponse,
-    RegisterRequest,
-    RegisterResponse,
     LoginRequest,
     LoginResponse,
     TokenResponse,
@@ -41,43 +39,26 @@ def _user_to_response(user: User) -> UserResponse:
 
 class UsersService:
     @staticmethod
-    async def create(dto: CreateUserDto) -> RegisterResponse:
-        """Create a new user and return user + token (for register flow)."""
-        def _create(db: Session) -> RegisterResponse:
+    async def create_by_admin(dto: CreateUserDto) -> UserResponse:
+        """Create a new user (Admin only). No self-registration."""
+        def _create(db: Session) -> UserResponse:
             existing = db.execute(select(User).where(User.username == dto.username))
             if existing.scalars().first():
                 raise ConflictError("User already exists with this username")
+            norm = normalize_text_fields({"name": dto.name, "job": dto.job}, ("name", "job"))
             user = User(
                 username=dto.username,
                 password=AuthService.get_password_hash(dto.password),
-                name=dto.name,
+                name=norm["name"],
                 role=dto.role,
                 phone=dto.phone,
-                job=dto.job,
+                job=norm.get("job"),
             )
             db.add(user)
             db.flush()
             db.refresh(user)
-            token_data = {"sub": user.username, "user_id": user.id, "role": user.role.value}
-            access_token = AuthService.create_access_token(token_data)
-            return RegisterResponse(
-                user=_user_to_response(user),
-                token=TokenResponse(access_token=access_token, token_type="bearer"),
-            )
+            return _user_to_response(user)
         return await run_db(_create)
-
-    @staticmethod
-    async def register(dto: RegisterRequest) -> RegisterResponse:
-        """Register a new user (alias for create with RegisterRequest)."""
-        create_dto = CreateUserDto(
-            username=dto.username,
-            password=dto.password,
-            name=dto.name,
-            role=dto.role,
-            phone=dto.phone,
-            job=dto.job,
-        )
-        return await UsersService.create(create_dto)
 
     @staticmethod
     async def login(dto: LoginRequest) -> LoginResponse:
@@ -177,6 +158,9 @@ class UsersService:
             if not user:
                 raise NotFoundError("User", user_id)
             data = dto.model_dump(exclude_unset=True)
+            data = normalize_text_fields(data, ("name", "job"))
+            if "password" in data:
+                data["password"] = AuthService.get_password_hash(data["password"])
             for k, v in data.items():
                 setattr(user, k, v)
             db.flush()
