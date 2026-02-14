@@ -9,8 +9,9 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from app.core.db.engine import run_db
+from app.modules.work_logs.schemas import _compute_duration_minutes
 from app.core.exceptions import NotFoundError
-from app.core.pagination import paginate_query, build_paginated_response
+from app.core.pagination import build_paginated_response
 from app.core.utils import search_words, normalize_text_fields
 from app.modules.users.models import User
 from app.modules.job_rates.models import JobRate
@@ -47,6 +48,8 @@ def _to_response(
         quantity=row.quantity,
         total_amount=row.total_amount,
         work_date=row.work_date,
+        start_time=row.start_time,
+        end_time=row.end_time,
         duration_minutes=row.duration_minutes,
         notes=row.notes,
         created_at=row.created_at,
@@ -80,14 +83,17 @@ class WorkLogService:
             rate = jr.rate
             total_amount = dto.quantity * rate
             notes = normalize_text_fields({"notes": dto.notes}, ("notes",)).get("notes")
+            duration_minutes = _compute_duration_minutes(dto.start_time, dto.end_time)
             row = WorkLog(
                 user_id=dto.user_id,
                 job_rate_id=dto.job_rate_id,
                 work_date=dto.work_date,
+                start_time=dto.start_time,
+                end_time=dto.end_time,
                 quantity=dto.quantity,
                 rate=rate,
                 total_amount=total_amount,
-                duration_minutes=dto.duration_minutes,
+                duration_minutes=duration_minutes,
                 notes=notes,
             )
             db.add(row)
@@ -161,7 +167,12 @@ class WorkLogService:
                 )
             query = query.order_by(WorkLog.work_date.desc(), WorkLog.created_at.desc())
 
-            items, total = paginate_query(db, query, page, page_size)
+            # paginate_query uses scalars() which returns only first column; we need all columns
+            count_query = select(func.count()).select_from(query.subquery())
+            total = db.execute(count_query).scalar() or 0
+            offset = (page - 1) * page_size
+            paginated_query = query.offset(offset).limit(page_size)
+            rows = db.execute(paginated_query).all()
             result = [
                 _to_response(
                     wl,
@@ -172,7 +183,7 @@ class WorkLogService:
                     operation_code=opcode,
                     operation_name=opname,
                 )
-                for wl, uname, pid, ppart, pname, opcode, opname in items
+                for wl, uname, pid, ppart, pname, opcode, opname in rows
             ]
             return WorkLogPaginatedResponse(
                 **build_paginated_response(result, total, page, page_size)
@@ -229,6 +240,17 @@ class WorkLogService:
                 raise NotFoundError("WorkLog", log_id)
             data = dto.model_dump(exclude_unset=True)
             data = normalize_text_fields(data, ("notes",))
+            # Compute duration_minutes when both start_time and end_time are present
+            start_time = data.get("start_time", row.start_time)
+            end_time = data.get("end_time", row.end_time)
+            if start_time and end_time:
+                data["duration_minutes"] = _compute_duration_minutes(start_time, end_time)
+            elif "start_time" in data or "end_time" in data:
+                # Partial update: if only one changed, use the other from row
+                st = data.get("start_time") or row.start_time
+                et = data.get("end_time") or row.end_time
+                if st and et:
+                    data["duration_minutes"] = _compute_duration_minutes(st, et)
             if "user_id" in data:
                 user = db.execute(
                     select(User).where(

@@ -2,7 +2,7 @@
 Work log model - tracks worker production: who did which operation on which product.
 """
 
-from sqlalchemy import Date, Numeric, Integer, ForeignKey, Text
+from sqlalchemy import Date, Numeric, Integer, String, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from typing import Optional
 from decimal import Decimal
@@ -32,6 +32,8 @@ class WorkLog(BaseModel):
         index=True,
     )
     work_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    start_time: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)  # HH:MM
+    end_time: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)  # HH:MM
     quantity: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     rate: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
