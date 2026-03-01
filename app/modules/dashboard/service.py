@@ -1,8 +1,10 @@
 """Dashboard service - counts and chart data."""
 
+import time
 from datetime import date, timedelta
 from decimal import Decimal
-from sqlalchemy import select, func
+from typing import Optional
+from sqlalchemy import select, func, case, and_
 from sqlalchemy.orm import Session
 
 from app.core.db.engine import run_db
@@ -16,72 +18,83 @@ from app.modules.dashboard.schemas import (
     ProductionTrendResponse,
 )
 
+# Simple in-memory TTL cache for dashboard stats
+_stats_cache: Optional[DashboardStatsResponse] = None
+_stats_cache_time: float = 0
+_STATS_TTL: float = 60  # seconds
+
 
 class DashboardService:
     @staticmethod
     async def get_stats() -> DashboardStatsResponse:
-        """Return counts for dashboard cards."""
+        """Return counts for dashboard cards. Cached for 60s."""
+        global _stats_cache, _stats_cache_time
+
+        now = time.monotonic()
+        if _stats_cache is not None and (now - _stats_cache_time) < _STATS_TTL:
+            return _stats_cache
 
         def _get_stats(db: Session) -> DashboardStatsResponse:
             today = date.today()
             week_start = today - timedelta(days=7)
 
-            total_products = db.execute(
-                select(func.count()).select_from(Product).where(Product.deleted_at.is_(None))
-            ).scalar()
-            total_products_count = total_products or 0
+            # Single query: all 7 counts in one DB round-trip
+            row = db.execute(
+                select(
+                    # Products
+                    func.count(case(
+                        (Product.deleted_at.is_(None), Product.id),
+                    )).label("total_products"),
+                    func.count(case(
+                        (and_(Product.deleted_at.is_(None), Product.is_active.is_(True)), Product.id),
+                    )).label("active_products"),
+                ).select_from(Product)
+            ).one()
 
-            active_products = db.execute(
-                select(func.count()).select_from(Product).where(
-                    Product.deleted_at.is_(None),
-                    Product.is_active.is_(True),
-                )
-            ).scalar()
-            active_products_count = active_products or 0
+            rm_row = db.execute(
+                select(
+                    func.count(case(
+                        (RawMaterial.deleted_at.is_(None), RawMaterial.id),
+                    )).label("raw_materials_count"),
+                    func.count(case(
+                        (and_(
+                            RawMaterial.deleted_at.is_(None),
+                            RawMaterial.min_stock_req.isnot(None),
+                            RawMaterial.stock_qty < RawMaterial.min_stock_req,
+                        ), RawMaterial.id),
+                    )).label("low_stock_count"),
+                ).select_from(RawMaterial)
+            ).one()
 
-            raw_materials = db.execute(
-                select(func.count()).select_from(RawMaterial).where(RawMaterial.deleted_at.is_(None))
-            ).scalar()
-            raw_materials_count = raw_materials or 0
-
-            low_stock = db.execute(
-                select(func.count()).select_from(RawMaterial).where(
-                    RawMaterial.deleted_at.is_(None),
-                    RawMaterial.min_stock_req.isnot(None),
-                    RawMaterial.stock_qty < RawMaterial.min_stock_req,
-                )
-            ).scalar()
-            low_stock_count = low_stock or 0
-
-            parties = db.execute(
+            party_count = db.execute(
                 select(func.count()).select_from(Party).where(Party.deleted_at.is_(None))
-            ).scalar()
-            parties_count = parties or 0
+            ).scalar() or 0
 
-            work_today = db.execute(
-                select(func.count()).select_from(WorkLog).where(WorkLog.work_date == today)
-            ).scalar()
-            work_logs_today = work_today or 0
-
-            work_week = db.execute(
-                select(func.count()).select_from(WorkLog).where(
-                    WorkLog.work_date >= week_start,
-                    WorkLog.work_date <= today,
-                )
-            ).scalar()
-            work_logs_this_week = work_week or 0
+            wl_row = db.execute(
+                select(
+                    func.count(case(
+                        (WorkLog.work_date == today, WorkLog.id),
+                    )).label("work_logs_today"),
+                    func.count(case(
+                        (and_(WorkLog.work_date >= week_start, WorkLog.work_date <= today), WorkLog.id),
+                    )).label("work_logs_this_week"),
+                ).select_from(WorkLog)
+            ).one()
 
             return DashboardStatsResponse(
-                total_products=total_products_count,
-                active_products=active_products_count,
-                raw_materials_count=raw_materials_count,
-                low_stock_count=low_stock_count,
-                parties_count=parties_count,
-                work_logs_today=work_logs_today,
-                work_logs_this_week=work_logs_this_week,
+                total_products=row.total_products or 0,
+                active_products=row.active_products or 0,
+                raw_materials_count=rm_row.raw_materials_count or 0,
+                low_stock_count=rm_row.low_stock_count or 0,
+                parties_count=party_count,
+                work_logs_today=wl_row.work_logs_today or 0,
+                work_logs_this_week=wl_row.work_logs_this_week or 0,
             )
 
-        return await run_db(_get_stats)
+        result = await run_db(_get_stats)
+        _stats_cache = result
+        _stats_cache_time = time.monotonic()
+        return result
 
     @staticmethod
     async def get_production_trend(days: int = 7) -> ProductionTrendResponse:

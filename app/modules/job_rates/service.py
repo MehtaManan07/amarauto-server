@@ -3,13 +3,14 @@ Job rates service. find_all with search; find_by_product(product_id).
 """
 
 from typing import List, Optional
-from sqlalchemy import select, or_
+from sqlalchemy import select, func, or_
 from sqlalchemy.orm import Session
 from datetime import datetime
 from decimal import Decimal
 
 from app.core.db.engine import run_db
 from app.core.exceptions import NotFoundError
+from app.core.pagination import build_paginated_response
 from app.core.utils import search_words, normalize_unicode
 from app.modules.products.models import Product
 from .models import JobRate
@@ -93,6 +94,50 @@ class JobRateService:
                 for line, part_no in rows
             ]
         return await run_db(_find_all)
+
+    @staticmethod
+    async def find_all_paginated(
+        page: int = 1,
+        page_size: int = 25,
+        search: Optional[str] = None,
+        product_id: Optional[int] = None,
+    ) -> dict:
+        """Paginated job rates list with search and product filter."""
+        words = search_words(search)
+
+        def _find(db: Session) -> dict:
+            query = (
+                select(JobRate, Product.part_no)
+                .join(Product, JobRate.product_id == Product.id)
+                .where(
+                    JobRate.deleted_at.is_(None),
+                    Product.deleted_at.is_(None),
+                )
+            )
+            if product_id is not None:
+                query = query.where(JobRate.product_id == product_id)
+            for word in words:
+                pattern = f"%{word}%"
+                query = query.where(
+                    or_(
+                        JobRate.operation_code.ilike(pattern),
+                        JobRate.operation_name.ilike(pattern),
+                    )
+                )
+            query = query.order_by(JobRate.product_id, JobRate.sequence, JobRate.id)
+
+            count_q = select(func.count()).select_from(query.subquery())
+            total = db.execute(count_q).scalar() or 0
+
+            offset = (page - 1) * page_size
+            rows = db.execute(query.offset(offset).limit(page_size)).all()
+            items = [
+                _to_response(line, product_part_no=part_no)
+                for line, part_no in rows
+            ]
+            return build_paginated_response(items, total, page, page_size)
+
+        return await run_db(_find)
 
     @staticmethod
     async def find_by_product(product_id: int) -> List[JobRateResponse]:

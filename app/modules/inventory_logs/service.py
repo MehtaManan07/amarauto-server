@@ -1,11 +1,12 @@
 """Inventory log service - create and fetch logs."""
 
 from typing import List
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from decimal import Decimal
 
 from app.core.db.engine import run_db
+from app.core.pagination import build_paginated_response
 from app.modules.inventory_logs.models import InventoryLog, LogType
 from app.modules.inventory_logs.schemas import InventoryLogResponse
 
@@ -53,17 +54,25 @@ class InventoryLogService:
     @staticmethod
     async def get_logs_by_raw_material(
         raw_material_id: int,
-    ) -> List[InventoryLogResponse]:
-        """Get all inventory logs for a raw material, newest first."""
+        page: int = 1,
+        page_size: int = 25,
+    ) -> dict:
+        """Get inventory logs for a raw material, newest first, with pagination."""
 
-        def _get(db: Session) -> List[InventoryLogResponse]:
-            result = db.execute(
+        def _get(db: Session) -> dict:
+            base_query = (
                 select(InventoryLog)
                 .where(InventoryLog.raw_material_id == raw_material_id)
                 .order_by(InventoryLog.created_at.desc())
             )
-            rows = result.scalars().all()
-            return [
+
+            total = db.execute(
+                select(func.count()).select_from(base_query.subquery())
+            ).scalar() or 0
+
+            offset = (page - 1) * page_size
+            rows = db.execute(base_query.offset(offset).limit(page_size)).scalars().all()
+            items = [
                 InventoryLogResponse(
                     id=r.id,
                     raw_material_id=r.raw_material_id,
@@ -77,5 +86,6 @@ class InventoryLogService:
                 )
                 for r in rows
             ]
+            return build_paginated_response(items, total, page, page_size)
 
         return await run_db(_get)

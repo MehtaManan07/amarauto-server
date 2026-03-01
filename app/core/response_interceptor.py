@@ -1,15 +1,13 @@
 """
 Success Response Interceptor Middleware
 FastAPI equivalent of NestJS SuccessResponseInterceptor.
-Wraps all successful responses in a standard format with success flag and optional count.
+Wraps all successful responses in a standard format with success flag.
 """
 
-from typing import Callable, Any
+from typing import Callable
 from fastapi import Request, Response
-from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from starlette.middleware.base import BaseHTTPMiddleware
-import json
 
 
 # Key for skipping the interceptor on specific routes
@@ -18,75 +16,55 @@ SKIP_INTERCEPTOR_KEY = "skip_interceptor"
 
 class SuccessResponseInterceptor(BaseHTTPMiddleware):
     """
-    Middleware that wraps all successful responses in a standard format:
-    {
-        "success": true,
-        "count": <length> (if data is a list),
-        "data": <original response>
-    }
-    
+    Middleware that wraps all successful JSON responses in:
+    {"success": true, "data": <original response>}
+
+    Uses byte-level wrapping — no JSON parsing or re-serialization.
     Can be skipped on specific routes using the @skip_interceptor decorator.
     """
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         response = await call_next(request)
-        
+
         # Skip interceptor for FastAPI built-in documentation endpoints
-        excluded_paths = ["/openapi.json", "/docs", "/redoc"]
-        if request.url.path in excluded_paths:
+        if request.url.path in ("/openapi.json", "/docs", "/redoc"):
             return response
-        
+
         # Only intercept successful JSON responses (2xx status codes)
         if not (200 <= response.status_code < 300):
             return response
-        
+
         # Check if the route has the skip interceptor flag
-        if hasattr(request.state, SKIP_INTERCEPTOR_KEY):
-            skip = getattr(request.state, SKIP_INTERCEPTOR_KEY, False)
-            if skip:
-                return response
-        
+        if getattr(request.state, SKIP_INTERCEPTOR_KEY, False):
+            return response
+
         # Check the response content type
         content_type = response.headers.get("content-type", "")
         if "application/json" not in content_type:
             return response
-        
-        # Read the original response body
-        response_body = b""
+
+        # Collect body efficiently — O(n) with join vs O(n²) with +=
+        chunks = []
         async for chunk in response.body_iterator:
-            response_body += chunk
-        
-        try:
-            # Parse the original response
-            original_data = json.loads(response_body.decode())
-            
-            # Create the wrapped response
-            wrapped_response = {
-                "success": True,
-                "data": original_data,
-            }
-            
-            # Add count if data is a list
-            if isinstance(original_data, list):
-                wrapped_response["count"] = len(original_data)
-            
-            # Copy headers but exclude Content-Length (will be recalculated by JSONResponse)
-            headers = dict(response.headers)
-            headers.pop("content-length", None)
-            
-            # Return the wrapped response
-            return JSONResponse(
-                content=wrapped_response,
-                status_code=response.status_code,
-                headers=headers,
-            )
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            # If we can't parse the response, return it as is
-            return Response(
-                content=response_body,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-            )
+            chunks.append(chunk)
+        body = b"".join(chunks)
+
+        # Wrap at byte level — NO json.loads, NO json.dumps
+        wrapped = b'{"success":true,"data":' + body + b"}"
+
+        # Copy headers, drop content-length (now stale after wrapping)
+        headers = {
+            k: v
+            for k, v in response.headers.items()
+            if k.lower() != "content-length"
+        }
+
+        return Response(
+            content=wrapped,
+            status_code=response.status_code,
+            headers=headers,
+            media_type="application/json",
+        )
 
 
 def skip_interceptor(func: Callable) -> Callable:

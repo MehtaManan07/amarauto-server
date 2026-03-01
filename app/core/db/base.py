@@ -33,5 +33,5 @@ class BaseModel(Base):
     )
 
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=False), nullable=True, default=None
+        DateTime(timezone=False), nullable=True, default=None, index=True
     )

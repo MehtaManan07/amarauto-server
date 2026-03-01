@@ -22,14 +22,18 @@ async def create_job_rate(
     return await JobRateService.create(dto)
 
 
-@router.get("", response_model=List[JobRateResponse])
+@router.get("")
 async def list_job_rates(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(25, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search operation_code, operation_name (words AND'd)"),
     product_id: Optional[int] = Query(None, description="Filter by product"),
     current_user: TokenData = Depends(require_any_role),
 ):
-    """List job rates (operations). Optional search and product_id filter."""
-    return await JobRateService.find_all(
+    """List job rates (operations) with pagination. Optional search and product_id filter."""
+    return await JobRateService.find_all_paginated(
+        page=page,
+        page_size=page_size,
         search=search,
         product_id=product_id,
     )

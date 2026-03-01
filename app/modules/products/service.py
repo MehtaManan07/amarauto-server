@@ -239,28 +239,23 @@ class ProductService:
             if fields
             else list(ALLOWED_FIELD_OPTIONS_FIELDS)
         )
-        print("requested", requested)
 
         if not requested:
             return {}
 
         def _get_options(db: Session) -> Dict[str, List[str]]:
-            cols = [getattr(Product, f) for f in requested]
-
-            stmt = select(*cols).where(Product.deleted_at.is_(None))
-
-            rows = db.execute(stmt).all()
-            print("rows", len(rows))
-
-            out: Dict[str, set] = {f: set() for f in requested}
-
-            for row in rows:
-                for idx, field in enumerate(requested):
-                    value = row[idx]
-                    if value is not None:
-                        out[field].add(str(value))
-
-            return {field: sorted(values) for field, values in out.items()}
+            out: Dict[str, List[str]] = {}
+            for field in requested:
+                col = getattr(Product, field)
+                stmt = (
+                    select(col)
+                    .where(Product.deleted_at.is_(None), col.isnot(None))
+                    .distinct()
+                    .order_by(col)
+                )
+                result = db.execute(stmt)
+                out[field] = list(result.scalars().all())
+            return out
 
         return await run_db(_get_options)
 
