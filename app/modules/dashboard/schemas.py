@@ -14,8 +14,6 @@ class DashboardStatsResponse(BaseModel):
     parties_count: int
     work_logs_today: int
     work_logs_this_week: int
-
-
 class ProductionTrendItem(BaseModel):
     """Daily production aggregate for chart."""
 
