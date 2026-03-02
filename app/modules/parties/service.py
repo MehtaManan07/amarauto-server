@@ -4,7 +4,7 @@ and filters (state, party_type). Field options for dropdowns.
 """
 
 from typing import Dict, List, Optional
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, union_all, literal
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -85,17 +85,18 @@ class PartyService:
             return {}
 
         def _get_options(db: Session) -> Dict[str, List[str]]:
-            out: Dict[str, List[str]] = {}
-            for field in requested:
-                col = getattr(Party, field)
-                stmt = (
-                    select(col)
-                    .where(Party.deleted_at.is_(None), col.isnot(None))
-                    .distinct()
-                    .order_by(col)
-                )
-                result = db.execute(stmt)
-                out[field] = list(result.scalars().all())
+            subqueries = [
+                select(literal(field).label("field"), getattr(Party, field).label("value"))
+                .where(Party.deleted_at.is_(None), getattr(Party, field).isnot(None))
+                .distinct()
+                for field in requested
+            ]
+            rows = db.execute(union_all(*subqueries)).all()
+            out: Dict[str, List[str]] = {f: [] for f in requested}
+            for field_name, value in rows:
+                out[field_name].append(value)
+            for field_name in out:
+                out[field_name].sort()
             return out
 
         return await run_db(_get_options)

@@ -3,7 +3,7 @@ Products service. find_all with powerful search; get_bom uses BOM module.
 """
 
 from typing import Dict, List, Optional
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, union_all, literal
 from sqlalchemy.orm import Session
 from datetime import datetime
 from decimal import Decimal
@@ -22,6 +22,8 @@ from app.modules.products.schemas import (
     BulkItemResult,
     BulkCreateResponse,
 )
+from app.modules.bom.models import BOMLine
+from app.modules.raw_materials.models import RawMaterial
 from app.modules.bom.service import BOMService as BOMServiceRef
 
 
@@ -100,16 +102,22 @@ class ProductService:
             skipped = 0
             errors = 0
             details: List[BulkItemResult] = []
+
+            # Single query to check all duplicates upfront
+            all_part_nos = [dto.part_no for dto in items]
+            existing_part_nos = set(
+                db.execute(
+                    select(Product.part_no).where(
+                        Product.part_no.in_(all_part_nos),
+                        Product.deleted_at.is_(None),
+                    )
+                ).scalars().all()
+            )
+
             for i, dto in enumerate(items):
                 one_indexed = i + 1
                 try:
-                    existing = db.execute(
-                        select(Product).where(
-                            Product.part_no == dto.part_no,
-                            Product.deleted_at.is_(None),
-                        )
-                    )
-                    if existing.scalars().first():
+                    if dto.part_no in existing_part_nos:
                         skipped += 1
                         details.append(
                             BulkItemResult(
@@ -244,17 +252,18 @@ class ProductService:
             return {}
 
         def _get_options(db: Session) -> Dict[str, List[str]]:
-            out: Dict[str, List[str]] = {}
-            for field in requested:
-                col = getattr(Product, field)
-                stmt = (
-                    select(col)
-                    .where(Product.deleted_at.is_(None), col.isnot(None))
-                    .distinct()
-                    .order_by(col)
-                )
-                result = db.execute(stmt)
-                out[field] = list(result.scalars().all())
+            subqueries = [
+                select(literal(field).label("field"), getattr(Product, field).label("value"))
+                .where(Product.deleted_at.is_(None), getattr(Product, field).isnot(None))
+                .distinct()
+                for field in requested
+            ]
+            rows = db.execute(union_all(*subqueries)).all()
+            out: Dict[str, List[str]] = {f: [] for f in requested}
+            for field_name, value in rows:
+                out[field_name].append(value)
+            for field_name in out:
+                out[field_name].sort()
             return out
 
         return await run_db(_get_options)
@@ -280,40 +289,87 @@ class ProductService:
         product_id: int, variant: Optional[str] = None
     ) -> ProductDetailResponse:
         """Product by id with BOM grouped by variant."""
-        base = await ProductService.find_one(product_id)
-        bom_lines = await BOMServiceRef.find_by_product(product_id, variant=None)
-        bom_by_variant: dict = {}
-        for l in bom_lines:
-            key = l.variant if l.variant else "Default"
-            line = BOMLineResponse(
-                raw_material_id=l.raw_material_id,
-                raw_material_name=l.raw_material_name,
-                variant=l.variant,
-                batch_qty=l.batch_qty,
-                raw_qty=l.raw_qty,
+        def _find(db: Session) -> ProductDetailResponse:
+            row = db.execute(
+                select(Product).where(
+                    Product.id == product_id,
+                    Product.deleted_at.is_(None),
+                )
+            ).scalar_one_or_none()
+            if not row:
+                raise NotFoundError("Product", product_id)
+            base = _to_response(row)
+
+            bom_query = (
+                select(BOMLine, RawMaterial.name)
+                .join(RawMaterial, BOMLine.raw_material_id == RawMaterial.id)
+                .where(
+                    BOMLine.product_id == product_id,
+                    BOMLine.deleted_at.is_(None),
+                    RawMaterial.deleted_at.is_(None),
+                )
+                .order_by(BOMLine.product_id, BOMLine.variant, BOMLine.id)
             )
-            if key not in bom_by_variant:
-                bom_by_variant[key] = []
-            bom_by_variant[key].append(line)
-        return ProductDetailResponse(**base.model_dump(), bom_by_variant=bom_by_variant)
+            bom_rows = db.execute(bom_query).all()
+
+            bom_by_variant: dict = {}
+            for line, rm_name in bom_rows:
+                key = line.variant if line.variant else "Default"
+                bom_line = BOMLineResponse(
+                    raw_material_id=line.raw_material_id,
+                    raw_material_name=rm_name,
+                    variant=line.variant,
+                    batch_qty=line.batch_qty,
+                    raw_qty=line.raw_qty,
+                )
+                if key not in bom_by_variant:
+                    bom_by_variant[key] = []
+                bom_by_variant[key].append(bom_line)
+
+            return ProductDetailResponse(**base.model_dump(), bom_by_variant=bom_by_variant)
+
+        return await run_db(_find)
 
     @staticmethod
     async def get_bom(
         product_id: int, variant: Optional[str] = None
     ) -> List[BOMLineResponse]:
         """Get BOM for product (and optional variant) from BOM module."""
-        await ProductService.find_one(product_id)
-        bom_lines = await BOMServiceRef.find_by_product(product_id, variant=variant)
-        return [
-            BOMLineResponse(
-                raw_material_id=l.raw_material_id,
-                raw_material_name=l.raw_material_name,
-                variant=l.variant,
-                batch_qty=l.batch_qty,
-                raw_qty=l.raw_qty,
+        def _find(db: Session) -> List[BOMLineResponse]:
+            exists = db.execute(
+                select(Product.id).where(
+                    Product.id == product_id,
+                    Product.deleted_at.is_(None),
+                )
+            ).scalar_one_or_none()
+            if not exists:
+                raise NotFoundError("Product", product_id)
+
+            bom_query = (
+                select(BOMLine, RawMaterial.name)
+                .join(RawMaterial, BOMLine.raw_material_id == RawMaterial.id)
+                .where(
+                    BOMLine.product_id == product_id,
+                    BOMLine.deleted_at.is_(None),
+                    RawMaterial.deleted_at.is_(None),
+                )
             )
-            for l in bom_lines
-        ]
+            if variant is not None:
+                bom_query = bom_query.where(BOMLine.variant == variant)
+            bom_query = bom_query.order_by(BOMLine.product_id, BOMLine.variant, BOMLine.id)
+            rows = db.execute(bom_query).all()
+            return [
+                BOMLineResponse(
+                    raw_material_id=line.raw_material_id,
+                    raw_material_name=rm_name,
+                    variant=line.variant,
+                    batch_qty=line.batch_qty,
+                    raw_qty=line.raw_qty,
+                )
+                for line, rm_name in rows
+            ]
+
+        return await run_db(_find)
 
     @staticmethod
     async def update(product_id: int, dto: ProductUpdateDto) -> ProductResponse:

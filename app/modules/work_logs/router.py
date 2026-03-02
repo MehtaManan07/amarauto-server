@@ -12,6 +12,7 @@ from .service import WorkLogService
 from .schemas import (
     WorkLogCreateDto,
     WorkLogUpdateDto,
+    WorkLogBulkCreateDto,
     WorkLogResponse,
     WorkLogPaginatedResponse,
 )
@@ -26,6 +27,15 @@ async def create_work_log(
 ):
     """Add a work log (Admin/Supervisor only)."""
     return await WorkLogService.create(dto)
+
+
+@router.post("/bulk", response_model=list[WorkLogResponse])
+async def bulk_create_work_logs(
+    dto: WorkLogBulkCreateDto,
+    current_user: TokenData = Depends(require_admin_or_supervisor),
+):
+    """Bulk create work logs for a single worker and operation (Admin/Supervisor only)."""
+    return await WorkLogService.bulk_create(dto)
 
 
 @router.get("", response_model=WorkLogPaginatedResponse)

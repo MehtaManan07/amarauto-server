@@ -174,6 +174,7 @@ class JobRateService:
             row = result.scalar_one_or_none()
             if not row:
                 raise NotFoundError("JobRate", rate_id)
+            product = None
             if dto.product_id is not None:
                 product = db.execute(
                     select(Product).where(
@@ -190,9 +191,10 @@ class JobRateService:
                 setattr(row, k, v)
             db.flush()
             db.refresh(row)
-            product = db.execute(
-                select(Product).where(Product.id == row.product_id)
-            ).scalar_one_or_none()
+            if product is None:
+                product = db.execute(
+                    select(Product).where(Product.id == row.product_id)
+                ).scalar_one_or_none()
             return _to_response(row, product_part_no=product.part_no if product else None)
         return await run_db(_update)
 

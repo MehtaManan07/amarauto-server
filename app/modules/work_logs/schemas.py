@@ -126,6 +126,48 @@ class WorkLogResponse(BaseModel):
         from_attributes = True
 
 
+class WorkLogBulkItemDto(BaseModel):
+    work_date: date
+    start_time: str = Field(..., description="Start time HH:MM")
+    end_time: str = Field(..., description="End time HH:MM")
+    quantity: Decimal = Field(..., ge=0)
+    notes: Optional[str] = Field(None, max_length=2000)
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time(cls, v: str) -> str:
+        if not TIME_PATTERN.match(v):
+            raise ValueError("Use HH:MM format (e.g. 09:30)")
+        parts = v.split(":")
+        h, m = int(parts[0]), int(parts[1])
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError("Invalid time")
+        return v
+
+    @field_validator("end_time")
+    @classmethod
+    def end_after_start(cls, v: str, info) -> str:
+        start = info.data.get("start_time")
+        if start and v:
+            try:
+                _compute_duration_minutes(start, v)
+            except ValueError as e:
+                raise ValueError("end_time must be after start_time") from e
+        return v
+
+    class Config:
+        from_attributes = True
+
+
+class WorkLogBulkCreateDto(BaseModel):
+    user_id: int
+    job_rate_id: int
+    items: list[WorkLogBulkItemDto] = Field(..., min_length=1)
+
+    class Config:
+        from_attributes = True
+
+
 class WorkLogPaginatedResponse(BaseModel):
     """Paginated response for work logs list."""
 

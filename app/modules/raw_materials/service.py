@@ -3,7 +3,7 @@ Raw materials service. find_all with powerful search; check_stock for low/below-
 """
 
 from typing import Dict, List, Optional
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, union_all, literal
 from sqlalchemy.orm import Session
 from datetime import datetime
 from decimal import Decimal
@@ -67,17 +67,18 @@ class RawMaterialService:
             return {}
 
         def _get_options(db: Session) -> Dict[str, List[str]]:
-            out: Dict[str, List[str]] = {}
-            for field in requested:
-                col = getattr(RawMaterial, field)
-                stmt = (
-                    select(col)
-                    .where(RawMaterial.deleted_at.is_(None), col.isnot(None))
-                    .distinct()
-                    .order_by(col)
-                )
-                result = db.execute(stmt)
-                out[field] = list(result.scalars().all())
+            subqueries = [
+                select(literal(field).label("field"), getattr(RawMaterial, field).label("value"))
+                .where(RawMaterial.deleted_at.is_(None), getattr(RawMaterial, field).isnot(None))
+                .distinct()
+                for field in requested
+            ]
+            rows = db.execute(union_all(*subqueries)).all()
+            out: Dict[str, List[str]] = {f: [] for f in requested}
+            for field_name, value in rows:
+                out[field_name].append(value)
+            for field_name in out:
+                out[field_name].sort()
             return out
 
         return await run_db(_get_options)
@@ -122,17 +123,20 @@ class RawMaterialService:
             success_count = 0
             failure_count = 0
 
+            # Single query to check all duplicates upfront
+            all_names = [dto.name for dto in items]
+            existing_names = set(
+                db.execute(
+                    select(RawMaterial.name).where(
+                        RawMaterial.name.in_(all_names),
+                        RawMaterial.deleted_at.is_(None),
+                    )
+                ).scalars().all()
+            )
+
             for dto in items:
                 try:
-                    # Check for existing material
-                    existing = db.execute(
-                        select(RawMaterial).where(
-                            RawMaterial.name == dto.name,
-                            RawMaterial.deleted_at.is_(None)
-                        )
-                    ).scalars().first()
-
-                    if existing:
+                    if dto.name in existing_names:
                         results.append(BulkUploadItemResult(
                             name=dto.name,
                             success=False,

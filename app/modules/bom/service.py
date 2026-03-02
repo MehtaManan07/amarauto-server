@@ -358,6 +358,8 @@ class BOMService:
             row = result.scalar_one_or_none()
             if not row:
                 raise NotFoundError("BOMLine", line_id)
+            product = None
+            raw = None
             if dto.product_id is not None:
                 product = db.execute(
                     select(Product).where(
@@ -383,12 +385,14 @@ class BOMService:
                 setattr(row, k, v)
             db.flush()
             db.refresh(row)
-            raw = db.execute(
-                select(RawMaterial).where(RawMaterial.id == row.raw_material_id)
-            ).scalar_one_or_none()
-            product = db.execute(
-                select(Product).where(Product.id == row.product_id)
-            ).scalar_one_or_none()
+            if raw is None:
+                raw = db.execute(
+                    select(RawMaterial).where(RawMaterial.id == row.raw_material_id)
+                ).scalar_one_or_none()
+            if product is None:
+                product = db.execute(
+                    select(Product).where(Product.id == row.product_id)
+                ).scalar_one_or_none()
             return _to_response(
                 row,
                 raw_material_name=raw.name if raw else None,

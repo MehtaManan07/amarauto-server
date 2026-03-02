@@ -20,6 +20,7 @@ from .models import WorkLog
 from .schemas import (
     WorkLogCreateDto,
     WorkLogUpdateDto,
+    WorkLogBulkCreateDto,
     WorkLogResponse,
     WorkLogPaginatedResponse,
 )
@@ -109,6 +110,60 @@ class WorkLogService:
                 operation_name=jr.operation_name,
             )
         return await run_db(_create)
+
+    @staticmethod
+    async def bulk_create(dto: WorkLogBulkCreateDto) -> list[WorkLogResponse]:
+        def _bulk_create(db: Session) -> list[WorkLogResponse]:
+            user = db.execute(
+                select(User).where(
+                    User.id == dto.user_id,
+                    User.deleted_at.is_(None),
+                )
+            ).scalar_one_or_none()
+            if not user:
+                raise NotFoundError("User", dto.user_id)
+            job_rate = db.execute(
+                select(JobRate, Product.part_no, Product.name)
+                .join(Product, JobRate.product_id == Product.id)
+                .where(
+                    JobRate.id == dto.job_rate_id,
+                    JobRate.deleted_at.is_(None),
+                )
+            ).one_or_none()
+            if not job_rate:
+                raise NotFoundError("JobRate", dto.job_rate_id)
+            jr, part_no, prod_name = job_rate
+            rate = jr.rate
+            results = []
+            for item in dto.items:
+                notes = normalize_text_fields({"notes": item.notes}, ("notes",)).get("notes")
+                duration_minutes = _compute_duration_minutes(item.start_time, item.end_time)
+                row = WorkLog(
+                    user_id=dto.user_id,
+                    job_rate_id=dto.job_rate_id,
+                    work_date=item.work_date,
+                    start_time=item.start_time,
+                    end_time=item.end_time,
+                    quantity=item.quantity,
+                    rate=rate,
+                    total_amount=item.quantity * rate,
+                    duration_minutes=duration_minutes,
+                    notes=notes,
+                )
+                db.add(row)
+                db.flush()
+                db.refresh(row)
+                results.append(_to_response(
+                    row,
+                    user_name=user.name,
+                    product_id=jr.product_id,
+                    product_part_no=part_no,
+                    product_name=prod_name,
+                    operation_code=jr.operation_code,
+                    operation_name=jr.operation_name,
+                ))
+            return results
+        return await run_db(_bulk_create)
 
     @staticmethod
     async def find_all_paginated(

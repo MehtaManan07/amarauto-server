@@ -83,6 +83,7 @@ class ProductionService:
             bom_rows = bom_result.all()
 
             # 3. If stage > 1, check previous stage has enough
+            prev_stage_row = None
             if dto.stage_number > 1:
                 prev_stage_query = (
                     select(StageInventory)
@@ -100,8 +101,8 @@ class ProductionService:
                     prev_stage_query = prev_stage_query.where(
                         StageInventory.variant.is_(None)
                     )
-                prev_row = db.execute(prev_stage_query).scalar_one_or_none()
-                prev_qty = (prev_row.quantity if prev_row else Decimal("0")) or Decimal(
+                prev_stage_row = db.execute(prev_stage_query).scalar_one_or_none()
+                prev_qty = (prev_stage_row.quantity if prev_stage_row else Decimal("0")) or Decimal(
                     "0"
                 )
                 if prev_qty < dto.quantity:
@@ -152,29 +153,11 @@ class ProductionService:
                     )
                 )
 
-            # 6. If stage > 1, deduct from previous stage
-            if dto.stage_number > 1:
-                prev_stage_query = (
-                    select(StageInventory)
-                    .where(
-                        StageInventory.product_id == dto.product_id,
-                        StageInventory.stage_number == dto.stage_number - 1,
-                        StageInventory.deleted_at.is_(None),
-                    )
-                )
-                if dto.variant:
-                    prev_stage_query = prev_stage_query.where(
-                        StageInventory.variant == dto.variant
-                    )
-                else:
-                    prev_stage_query = prev_stage_query.where(
-                        StageInventory.variant.is_(None)
-                    )
-                prev_row = db.execute(prev_stage_query).scalar_one_or_none()
-                if prev_row:
-                    prev_row.quantity = (prev_row.quantity or Decimal("0")) - dto.quantity
-                    if prev_row.quantity <= 0:
-                        db.delete(prev_row)
+            # 6. If stage > 1, deduct from previous stage (reuse row fetched in step 3)
+            if dto.stage_number > 1 and prev_stage_row:
+                prev_stage_row.quantity = (prev_stage_row.quantity or Decimal("0")) - dto.quantity
+                if prev_stage_row.quantity <= 0:
+                    db.delete(prev_stage_row)
 
             # 7. Add/update current stage inventory
             curr_query = (

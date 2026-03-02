@@ -25,7 +25,7 @@ async def create_job_rate(
 @router.get("")
 async def list_job_rates(
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(25, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(25, ge=1, le=500, description="Items per page"),
     search: Optional[str] = Query(None, description="Search operation_code, operation_name (words AND'd)"),
     product_id: Optional[int] = Query(None, description="Filter by product"),
     current_user: TokenData = Depends(require_any_role),
