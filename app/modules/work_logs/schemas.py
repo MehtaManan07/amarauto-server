@@ -127,6 +127,7 @@ class WorkLogResponse(BaseModel):
 
 
 class WorkLogBulkItemDto(BaseModel):
+    job_rate_id: int
     work_date: date
     start_time: str = Field(..., description="Start time HH:MM")
     end_time: str = Field(..., description="End time HH:MM")
@@ -161,7 +162,6 @@ class WorkLogBulkItemDto(BaseModel):
 
 class WorkLogBulkCreateDto(BaseModel):
     user_id: int
-    job_rate_id: int
     items: list[WorkLogBulkItemDto] = Field(..., min_length=1)
 
     class Config:

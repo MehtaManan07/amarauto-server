@@ -122,31 +122,33 @@ class WorkLogService:
             ).scalar_one_or_none()
             if not user:
                 raise NotFoundError("User", dto.user_id)
-            job_rate = db.execute(
-                select(JobRate, Product.part_no, Product.name)
-                .join(Product, JobRate.product_id == Product.id)
-                .where(
-                    JobRate.id == dto.job_rate_id,
-                    JobRate.deleted_at.is_(None),
-                )
-            ).one_or_none()
-            if not job_rate:
-                raise NotFoundError("JobRate", dto.job_rate_id)
-            jr, part_no, prod_name = job_rate
-            rate = jr.rate
+            job_rate_cache: dict[int, tuple] = {}
             results = []
             for item in dto.items:
+                if item.job_rate_id not in job_rate_cache:
+                    job_rate = db.execute(
+                        select(JobRate, Product.part_no, Product.name)
+                        .join(Product, JobRate.product_id == Product.id)
+                        .where(
+                            JobRate.id == item.job_rate_id,
+                            JobRate.deleted_at.is_(None),
+                        )
+                    ).one_or_none()
+                    if not job_rate:
+                        raise NotFoundError("JobRate", item.job_rate_id)
+                    job_rate_cache[item.job_rate_id] = job_rate
+                jr, part_no, prod_name = job_rate_cache[item.job_rate_id]
                 notes = normalize_text_fields({"notes": item.notes}, ("notes",)).get("notes")
                 duration_minutes = _compute_duration_minutes(item.start_time, item.end_time)
                 row = WorkLog(
                     user_id=dto.user_id,
-                    job_rate_id=dto.job_rate_id,
+                    job_rate_id=item.job_rate_id,
                     work_date=item.work_date,
                     start_time=item.start_time,
                     end_time=item.end_time,
                     quantity=item.quantity,
-                    rate=rate,
-                    total_amount=item.quantity * rate,
+                    rate=jr.rate,
+                    total_amount=item.quantity * jr.rate,
                     duration_minutes=duration_minutes,
                     notes=notes,
                 )
