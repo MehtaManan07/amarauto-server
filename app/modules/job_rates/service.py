@@ -3,14 +3,14 @@ Job rates service. find_all with search; find_by_product(product_id).
 """
 
 from typing import List, Optional
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 from datetime import datetime
 from decimal import Decimal
 
 from app.core.db.engine import run_db
 from app.core.exceptions import NotFoundError
-from app.core.pagination import build_paginated_response
+from app.core.pagination import paginate_multi, build_paginated_response
 from app.core.utils import search_words, normalize_unicode
 from app.modules.products.models import Product
 from .models import JobRate
@@ -126,11 +126,8 @@ class JobRateService:
                 )
             query = query.order_by(JobRate.product_id, JobRate.sequence, JobRate.id)
 
-            count_q = select(func.count()).select_from(query.subquery())
-            total = db.execute(count_q).scalar() or 0
-
-            offset = (page - 1) * page_size
-            rows = db.execute(query.offset(offset).limit(page_size)).all()
+            # Single query with COUNT(*) OVER() window function
+            rows, total = paginate_multi(db, query, page, page_size)
             items = [
                 _to_response(line, product_part_no=part_no)
                 for line, part_no in rows

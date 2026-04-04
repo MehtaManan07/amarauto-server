@@ -101,7 +101,7 @@ class ProductService:
             added = 0
             skipped = 0
             errors = 0
-            details: List[BulkItemResult] = []
+            details: List[BulkItemResult] = [None] * len(items)
 
             # Single query to check all duplicates upfront
             all_part_nos = [dto.part_no for dto in items]
@@ -114,18 +114,17 @@ class ProductService:
                 ).scalars().all()
             )
 
+            pending_indices: List[int] = []
             for i, dto in enumerate(items):
                 one_indexed = i + 1
                 try:
                     if dto.part_no in existing_part_nos:
                         skipped += 1
-                        details.append(
-                            BulkItemResult(
-                                index=one_indexed,
-                                status="skip",
-                                part_no=dto.part_no,
-                                message="duplicate part_no",
-                            )
+                        details[i] = BulkItemResult(
+                            index=one_indexed,
+                            status="skip",
+                            part_no=dto.part_no,
+                            message="duplicate part_no",
                         )
                         continue
                     row = Product(
@@ -146,27 +145,28 @@ class ProductService:
                         unit_of_measure=normalize_unicode(dto.unit_of_measure) if dto.unit_of_measure else dto.unit_of_measure,
                     )
                     db.add(row)
-                    db.flush()
                     added += 1
-                    details.append(
-                        BulkItemResult(
-                            index=one_indexed,
-                            status="ok",
-                            part_no=dto.part_no,
-                            message=dto.name,
-                        )
-                    )
+                    pending_indices.append(i)
                 except Exception as e:
                     errors += 1
-                    details.append(
-                        BulkItemResult(
-                            index=one_indexed,
-                            status="error",
-                            part_no=dto.part_no,
-                            message=str(e),
-                        )
+                    details[i] = BulkItemResult(
+                        index=one_indexed,
+                        status="error",
+                        part_no=dto.part_no,
+                        message=str(e),
                     )
-            db.commit()
+
+            # Single flush for all rows — one DB round-trip instead of N
+            if pending_indices:
+                db.flush()
+            for idx in pending_indices:
+                details[idx] = BulkItemResult(
+                    index=idx + 1,
+                    status="ok",
+                    part_no=items[idx].part_no,
+                    message=items[idx].name,
+                )
+
             return BulkCreateResponse(
                 added=added, skipped=skipped, errors=errors, details=details
             )

@@ -20,13 +20,12 @@ T = TypeVar('T')
 turso_url = settings.turso_database_url.replace("libsql://", "sqlite+libsql://") + "?secure=true"
 
 # Create sync engine for Turso
+# Note: pool_pre_ping is intentionally omitted — Turso uses HTTP streams,
+# so pre-ping just adds an extra round-trip with no benefit.
 engine = create_engine(
     turso_url,
     connect_args={"auth_token": settings.turso_auth_token},
     echo=False,
-    # Connection validation and pooling for Turso/libSQL HTTP streams
-    pool_pre_ping=True,  # Test connections before using them
-    pool_recycle=3600,   # Recycle connections after 1 hour
 )
 
 # Session factory

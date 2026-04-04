@@ -3,10 +3,13 @@ Pagination utilities for reusable pagination across all services.
 
 Provides helper functions to paginate SQLAlchemy queries and format responses.
 Works with the immutable query builder pattern used throughout the application.
+
+Uses COUNT(*) OVER() window function to get total + page data in a single query
+(one DB round-trip instead of two).
 """
 
 from typing import Tuple, List, Any
-from sqlalchemy import select, func
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.selectable import Select
 
@@ -19,39 +22,53 @@ def paginate_query(
 ) -> Tuple[List[Any], int]:
     """
     Apply offset-based pagination to a SQLAlchemy query.
+    Uses COUNT(*) OVER() window function to get total + data in ONE query.
 
     IMPORTANT: Query should already have:
     - WHERE clauses (including soft-delete filters)
-    - Eager loading (selectinload) to prevent N+1 queries
     - ORDER BY clause
-
-    This function:
-    1. Counts total matching records (before pagination)
-    2. Applies OFFSET and LIMIT
-    3. Executes and returns (items, total_count)
-
-    Args:
-        db: SQLAlchemy session
-        query: Base query with filters and ordering already applied
-        page: Page number (1-indexed, default 1)
-        page_size: Items per page (default 25)
+    - Select a single entity (e.g. select(Product))
 
     Returns:
         Tuple of (paginated_items, total_count)
     """
-    # Count total records BEFORE pagination
-    # Using subquery to preserve all WHERE clauses and joins
-    count_query = select(func.count()).select_from(query.subquery())
-    total = db.execute(count_query).scalar()
-
-    # Apply offset and limit
     offset = (page - 1) * page_size
-    paginated_query = query.offset(offset).limit(page_size)
+    count_col = func.count().over().label('_total_count')
+    windowed = query.add_columns(count_col).offset(offset).limit(page_size)
+    rows = db.execute(windowed).all()
 
-    # Execute paginated query
-    result = db.execute(paginated_query)
-    items = result.scalars().all()
+    if not rows:
+        return [], 0
 
+    total = rows[0][-1]
+    items = [row[0] for row in rows]
+    return items, total
+
+
+def paginate_multi(
+    db: Session,
+    query: Select,
+    page: int = 1,
+    page_size: int = 25,
+) -> Tuple[List[Any], int]:
+    """
+    Paginate a multi-column select query (e.g. select(Entity, col1, col2)).
+    Uses COUNT(*) OVER() window function to get total + data in ONE query.
+
+    Returns:
+        Tuple of (rows_without_count, total_count)
+        Each row is a tuple of all original columns (without the _total_count).
+    """
+    offset = (page - 1) * page_size
+    count_col = func.count().over().label('_total_count')
+    windowed = query.add_columns(count_col).offset(offset).limit(page_size)
+    rows = db.execute(windowed).all()
+
+    if not rows:
+        return [], 0
+
+    total = rows[0][-1]
+    items = [row[:-1] for row in rows]
     return items, total
 
 

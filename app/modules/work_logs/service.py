@@ -3,7 +3,7 @@ Work log service. CRUD with pagination and filters.
 """
 
 from typing import Optional
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 from datetime import date, datetime
 from decimal import Decimal
@@ -11,7 +11,7 @@ from decimal import Decimal
 from app.core.db.engine import run_db
 from app.modules.work_logs.schemas import _compute_duration_minutes
 from app.core.exceptions import NotFoundError
-from app.core.pagination import build_paginated_response
+from app.core.pagination import paginate_multi, build_paginated_response
 from app.core.utils import search_words, normalize_text_fields
 from app.modules.users.models import User
 from app.modules.job_rates.models import JobRate
@@ -123,7 +123,8 @@ class WorkLogService:
             if not user:
                 raise NotFoundError("User", dto.user_id)
             job_rate_cache: dict[int, tuple] = {}
-            results = []
+            now = datetime.utcnow()
+            rows_with_meta: list[tuple[WorkLog, str, int, str, str, str, str]] = []
             for item in dto.items:
                 if item.job_rate_id not in job_rate_cache:
                     job_rate = db.execute(
@@ -151,20 +152,28 @@ class WorkLogService:
                     total_amount=item.quantity * jr.rate,
                     duration_minutes=duration_minutes,
                     notes=notes,
+                    created_at=now,
+                    updated_at=now,
                 )
                 db.add(row)
-                db.flush()
-                db.refresh(row)
-                results.append(_to_response(
-                    row,
-                    user_name=user.name,
-                    product_id=jr.product_id,
-                    product_part_no=part_no,
-                    product_name=prod_name,
-                    operation_code=jr.operation_code,
-                    operation_name=jr.operation_name,
+                rows_with_meta.append((
+                    row, user.name, jr.product_id, part_no,
+                    prod_name, jr.operation_code, jr.operation_name,
                 ))
-            return results
+            # Single flush for all rows
+            db.flush()
+            return [
+                _to_response(
+                    row,
+                    user_name=uname,
+                    product_id=pid,
+                    product_part_no=ppart,
+                    product_name=pname,
+                    operation_code=opcode,
+                    operation_name=opname,
+                )
+                for row, uname, pid, ppart, pname, opcode, opname in rows_with_meta
+            ]
         return await run_db(_bulk_create)
 
     @staticmethod
@@ -224,12 +233,8 @@ class WorkLogService:
                 )
             query = query.order_by(WorkLog.work_date.desc(), WorkLog.created_at.desc())
 
-            # paginate_query uses scalars() which returns only first column; we need all columns
-            count_query = select(func.count()).select_from(query.subquery())
-            total = db.execute(count_query).scalar() or 0
-            offset = (page - 1) * page_size
-            paginated_query = query.offset(offset).limit(page_size)
-            rows = db.execute(paginated_query).all()
+            # Single query with COUNT(*) OVER() window function
+            rows, total = paginate_multi(db, query, page, page_size)
             result = [
                 _to_response(
                     wl,
@@ -286,53 +291,8 @@ class WorkLogService:
     @staticmethod
     async def update(log_id: int, dto: WorkLogUpdateDto) -> WorkLogResponse:
         def _update(db: Session) -> WorkLogResponse:
+            # Fetch work log with all related data in one join query
             result = db.execute(
-                select(WorkLog).where(
-                    WorkLog.id == log_id,
-                    WorkLog.deleted_at.is_(None),
-                )
-            )
-            row = result.scalar_one_or_none()
-            if not row:
-                raise NotFoundError("WorkLog", log_id)
-            data = dto.model_dump(exclude_unset=True)
-            data = normalize_text_fields(data, ("notes",))
-            # Compute duration_minutes when both start_time and end_time are present
-            start_time = data.get("start_time", row.start_time)
-            end_time = data.get("end_time", row.end_time)
-            if start_time and end_time:
-                data["duration_minutes"] = _compute_duration_minutes(start_time, end_time)
-            elif "start_time" in data or "end_time" in data:
-                # Partial update: if only one changed, use the other from row
-                st = data.get("start_time") or row.start_time
-                et = data.get("end_time") or row.end_time
-                if st and et:
-                    data["duration_minutes"] = _compute_duration_minutes(st, et)
-            if "user_id" in data:
-                user = db.execute(
-                    select(User).where(
-                        User.id == data["user_id"],
-                        User.deleted_at.is_(None),
-                    )
-                ).scalar_one_or_none()
-                if not user:
-                    raise NotFoundError("User", data["user_id"])
-            if "job_rate_id" in data:
-                jr_result = db.execute(
-                    select(JobRate).where(
-                        JobRate.id == data["job_rate_id"],
-                        JobRate.deleted_at.is_(None),
-                    )
-                ).scalar_one_or_none()
-                if not jr_result:
-                    raise NotFoundError("JobRate", data["job_rate_id"])
-                row.rate = jr_result.rate
-            for k, v in data.items():
-                setattr(row, k, v)
-            row.total_amount = row.quantity * row.rate
-            db.flush()
-            db.refresh(row)
-            res = db.execute(
                 select(
                     WorkLog,
                     User.name,
@@ -345,12 +305,66 @@ class WorkLogService:
                 .join(User, WorkLog.user_id == User.id)
                 .join(JobRate, WorkLog.job_rate_id == JobRate.id)
                 .join(Product, JobRate.product_id == Product.id)
-                .where(WorkLog.id == log_id)
+                .where(
+                    WorkLog.id == log_id,
+                    WorkLog.deleted_at.is_(None),
+                )
             )
-            wl, uname, pid, ppart, pname, opcode, opname = res.one()
+            fetched = result.one_or_none()
+            if not fetched:
+                raise NotFoundError("WorkLog", log_id)
+            row, user_name, pid, ppart, pname, opcode, opname = fetched
+
+            data = dto.model_dump(exclude_unset=True)
+            data = normalize_text_fields(data, ("notes",))
+            # Compute duration_minutes when both start_time and end_time are present
+            start_time = data.get("start_time", row.start_time)
+            end_time = data.get("end_time", row.end_time)
+            if start_time and end_time:
+                data["duration_minutes"] = _compute_duration_minutes(start_time, end_time)
+            elif "start_time" in data or "end_time" in data:
+                st = data.get("start_time") or row.start_time
+                et = data.get("end_time") or row.end_time
+                if st and et:
+                    data["duration_minutes"] = _compute_duration_minutes(st, et)
+
+            if "user_id" in data:
+                user = db.execute(
+                    select(User).where(
+                        User.id == data["user_id"],
+                        User.deleted_at.is_(None),
+                    )
+                ).scalar_one_or_none()
+                if not user:
+                    raise NotFoundError("User", data["user_id"])
+                user_name = user.name
+
+            if "job_rate_id" in data:
+                jr_result = db.execute(
+                    select(JobRate, Product.part_no, Product.name)
+                    .join(Product, JobRate.product_id == Product.id)
+                    .where(
+                        JobRate.id == data["job_rate_id"],
+                        JobRate.deleted_at.is_(None),
+                    )
+                ).one_or_none()
+                if not jr_result:
+                    raise NotFoundError("JobRate", data["job_rate_id"])
+                jr, ppart, pname = jr_result
+                row.rate = jr.rate
+                pid = jr.product_id
+                opcode = jr.operation_code
+                opname = jr.operation_name
+
+            for k, v in data.items():
+                setattr(row, k, v)
+            row.total_amount = row.quantity * row.rate
+            db.flush()
+
+            # Build response from data already in session — no redundant re-query
             return _to_response(
-                wl,
-                user_name=uname,
+                row,
+                user_name=user_name,
                 product_id=pid,
                 product_part_no=ppart,
                 product_name=pname,

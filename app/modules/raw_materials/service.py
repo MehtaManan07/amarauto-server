@@ -134,19 +134,23 @@ class RawMaterialService:
                 ).scalars().all()
             )
 
-            for dto in items:
+            now = datetime.utcnow()
+            # Use indexed results so order is preserved after batch flush
+            results = [None] * len(items)
+            pending_rows: list[tuple[RawMaterial, int]] = []
+
+            for i, dto in enumerate(items):
                 try:
                     if dto.name in existing_names:
-                        results.append(BulkUploadItemResult(
+                        results[i] = BulkUploadItemResult(
                             name=dto.name,
                             success=False,
                             error="Material with this name already exists",
                             data=None,
-                        ))
+                        )
                         failure_count += 1
                         continue
 
-                    # Create new material
                     row = RawMaterial(
                         name=normalize_unicode(dto.name) or dto.name,
                         unit_type=dto.unit_type,
@@ -161,27 +165,33 @@ class RawMaterialService:
                         description=normalize_unicode(dto.description) if dto.description else dto.description,
                         treat_as_consume=dto.treat_as_consume,
                         is_active=dto.is_active,
+                        created_at=now,
+                        updated_at=now,
                     )
                     db.add(row)
-                    db.flush()
-                    db.refresh(row)
-
-                    results.append(BulkUploadItemResult(
-                        name=dto.name,
-                        success=True,
-                        error=None,
-                        data=_to_response(row),
-                    ))
+                    pending_rows.append((row, i))
                     success_count += 1
 
                 except Exception as e:
-                    results.append(BulkUploadItemResult(
+                    results[i] = BulkUploadItemResult(
                         name=dto.name,
                         success=False,
                         error=str(e),
                         data=None,
-                    ))
+                    )
                     failure_count += 1
+
+            # Single flush for all rows — one DB round-trip instead of N
+            if pending_rows:
+                db.flush()
+
+            for row, idx in pending_rows:
+                results[idx] = BulkUploadItemResult(
+                    name=items[idx].name,
+                    success=True,
+                    error=None,
+                    data=_to_response(row),
+                )
 
             return BulkUploadResponse(
                 total=len(items),
@@ -355,10 +365,12 @@ class RawMaterialService:
     async def check_stock(
         below_min_only: bool = True,
         search: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> List[StockCheckResponse]:
         """
         List stock levels. If below_min_only=True, only items where stock_qty < min_stock_req
         (and min_stock_req is set). Optional search filters the list (same word search as find_all).
+        Optional limit caps the number of results returned.
         """
         words = search_words(search)
 
@@ -381,6 +393,8 @@ class RawMaterialService:
                     )
                 )
             query = query.order_by(RawMaterial.name)
+            if limit is not None:
+                query = query.limit(limit)
             result = db.execute(query)
             rows = result.scalars().all()
             return [

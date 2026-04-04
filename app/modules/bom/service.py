@@ -3,14 +3,14 @@ BOM service. find_all with search; find_by_product(product_id, variant).
 """
 
 from typing import List, Optional
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 from datetime import datetime
 from decimal import Decimal
 
 from app.core.db.engine import run_db
 from app.core.exceptions import NotFoundError
-from app.core.pagination import build_paginated_response
+from app.core.pagination import paginate_multi, build_paginated_response
 from app.core.utils import search_words, normalize_unicode
 from app.modules.products.models import Product
 from app.modules.raw_materials.models import RawMaterial
@@ -178,13 +178,8 @@ class BOMService:
                 )
             query = query.order_by(BOMLine.product_id, BOMLine.variant, BOMLine.id)
 
-            count_query = select(func.count()).select_from(query.subquery())
-            total = db.execute(count_query).scalar() or 0
-
-            offset = (page - 1) * page_size
-            paginated_query = query.offset(offset).limit(page_size)
-            result = db.execute(paginated_query)
-            rows = result.all()
+            # Single query with COUNT(*) OVER() window function
+            rows, total = paginate_multi(db, query, page, page_size)
 
             items = [
                 _to_response(

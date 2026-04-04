@@ -62,12 +62,14 @@ async def list_raw_materials(
 async def check_stock(
     below_min_only: bool = Query(True, description="If true, only items where stock_qty < min_stock_req"),
     search: Optional[str] = Query(None, description="Filter by search (same as list)"),
+    limit: Optional[int] = Query(None, ge=1, description="Max number of results to return"),
     current_user: TokenData = Depends(require_any_role),
 ):
     """Check stock levels. Use below_min_only=true for items below minimum only."""
     return await RawMaterialService.check_stock(
         below_min_only=below_min_only,
         search=search,
+        limit=limit,
     )
 
 
