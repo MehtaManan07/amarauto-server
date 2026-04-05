@@ -122,22 +122,26 @@ class WorkLogService:
             ).scalar_one_or_none()
             if not user:
                 raise NotFoundError("User", dto.user_id)
-            job_rate_cache: dict[int, tuple] = {}
+
+            # Batch-fetch all unique job rates in a single query
+            unique_jr_ids = list({item.job_rate_id for item in dto.items})
+            jr_rows = db.execute(
+                select(JobRate, Product.part_no, Product.name)
+                .join(Product, JobRate.product_id == Product.id)
+                .where(
+                    JobRate.id.in_(unique_jr_ids),
+                    JobRate.deleted_at.is_(None),
+                )
+            ).all()
+            job_rate_cache: dict[int, tuple] = {row[0].id: row for row in jr_rows}
+            # Validate all requested job rates were found
+            for jr_id in unique_jr_ids:
+                if jr_id not in job_rate_cache:
+                    raise NotFoundError("JobRate", jr_id)
+
             now = datetime.utcnow()
             rows_with_meta: list[tuple[WorkLog, str, int, str, str, str, str]] = []
             for item in dto.items:
-                if item.job_rate_id not in job_rate_cache:
-                    job_rate = db.execute(
-                        select(JobRate, Product.part_no, Product.name)
-                        .join(Product, JobRate.product_id == Product.id)
-                        .where(
-                            JobRate.id == item.job_rate_id,
-                            JobRate.deleted_at.is_(None),
-                        )
-                    ).one_or_none()
-                    if not job_rate:
-                        raise NotFoundError("JobRate", item.job_rate_id)
-                    job_rate_cache[item.job_rate_id] = job_rate
                 jr, part_no, prod_name = job_rate_cache[item.job_rate_id]
                 notes = normalize_text_fields({"notes": item.notes}, ("notes",)).get("notes")
                 duration_minutes = _compute_duration_minutes(item.start_time, item.end_time)
