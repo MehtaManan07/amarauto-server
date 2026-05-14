@@ -66,6 +66,7 @@ class ProductService:
             )
             if existing.scalars().first():
                 raise ConflictError("Product already exists with this part_no")
+            now = datetime.utcnow()
             row = Product(
                 name=normalize_unicode(dto.name) or dto.name,
                 category=normalize_unicode(dto.category) if dto.category else dto.category,
@@ -82,10 +83,11 @@ class ProductService:
                 dealer_price=dto.dealer_price,
                 retail_price=dto.retail_price,
                 unit_of_measure=normalize_unicode(dto.unit_of_measure) if dto.unit_of_measure else dto.unit_of_measure,
+                created_at=now,
+                updated_at=now,
             )
             db.add(row)
             db.flush()
-            db.refresh(row)
             return _to_response(row)
 
         return await run_db(_create)
@@ -389,8 +391,8 @@ class ProductService:
                 if k in text_fields and isinstance(v, str):
                     v = normalize_unicode(v) or v
                 setattr(row, k, v)
+            row.updated_at = datetime.utcnow()
             db.flush()
-            db.refresh(row)
             return _to_response(row)
 
         return await run_db(_update)

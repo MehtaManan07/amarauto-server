@@ -10,6 +10,7 @@ import asyncio
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import QueuePool
 
 from app.core.config import config as settings
 
@@ -19,12 +20,20 @@ T = TypeVar('T')
 # TURSO_DATABASE_URL contains "libsql://host", so we replace the scheme
 turso_url = settings.turso_database_url.replace("libsql://", "sqlite+libsql://") + "?secure=true"
 
-# Create sync engine for Turso
-# Note: pool_pre_ping is intentionally omitted — Turso uses HTTP streams,
-# so pre-ping just adds an extra round-trip with no benefit.
+# Create sync engine for Turso.
+# Override the libSQL dialect's default SingletonThreadPool (a SQLite legacy
+# default) with QueuePool — Turso is network-backed and benefits from real
+# connection pooling. pool_pre_ping is intentionally omitted (HTTP transport,
+# so pre-ping is wasted bandwidth); pool_recycle guards against long-idle
+# libSQL HTTP streams going stale.
 engine = create_engine(
     turso_url,
     connect_args={"auth_token": settings.turso_auth_token},
+    poolclass=QueuePool,
+    pool_size=20,
+    max_overflow=10,
+    pool_recycle=1800,
+    pool_timeout=10,
     echo=False,
 )
 

@@ -46,6 +46,7 @@ class UsersService:
             if existing.scalars().first():
                 raise ConflictError("User already exists with this username")
             norm = normalize_text_fields({"name": dto.name, "job": dto.job}, ("name", "job"))
+            now = datetime.utcnow()
             user = User(
                 username=dto.username,
                 password=AuthService.get_password_hash(dto.password),
@@ -53,10 +54,11 @@ class UsersService:
                 role=dto.role,
                 phone=dto.phone,
                 job=norm.get("job"),
+                created_at=now,
+                updated_at=now,
             )
             db.add(user)
             db.flush()
-            db.refresh(user)
             return _user_to_response(user)
         return await run_db(_create)
 
@@ -163,8 +165,8 @@ class UsersService:
                 data["password"] = AuthService.get_password_hash(data["password"])
             for k, v in data.items():
                 setattr(user, k, v)
+            user.updated_at = datetime.utcnow()
             db.flush()
-            db.refresh(user)
             return _user_to_response(user)
         return await run_db(_update)
 

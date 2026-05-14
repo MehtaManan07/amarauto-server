@@ -66,6 +66,7 @@ class BOMService:
             ).scalar_one_or_none()
             if not raw:
                 raise NotFoundError("RawMaterial", dto.raw_material_id)
+            now = datetime.utcnow()
             row = BOMLine(
                 product_id=dto.product_id,
                 raw_material_id=dto.raw_material_id,
@@ -73,10 +74,11 @@ class BOMService:
                 stage_number=dto.stage_number,
                 batch_qty=dto.batch_qty,
                 raw_qty=dto.raw_qty,
+                created_at=now,
+                updated_at=now,
             )
             db.add(row)
             db.flush()
-            db.refresh(row)
             return _to_response(
                 row,
                 raw_material_name=raw.name,
@@ -378,8 +380,8 @@ class BOMService:
                 if k == "variant" and isinstance(v, str):
                     v = normalize_unicode(v) or v
                 setattr(row, k, v)
+            row.updated_at = datetime.utcnow()
             db.flush()
-            db.refresh(row)
             if raw is None:
                 raw = db.execute(
                     select(RawMaterial).where(RawMaterial.id == row.raw_material_id)

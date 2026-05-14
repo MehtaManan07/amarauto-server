@@ -85,6 +85,7 @@ class WorkLogService:
             total_amount = dto.quantity * rate
             notes = normalize_text_fields({"notes": dto.notes}, ("notes",)).get("notes")
             duration_minutes = _compute_duration_minutes(dto.start_time, dto.end_time)
+            now = datetime.utcnow()
             row = WorkLog(
                 user_id=dto.user_id,
                 job_rate_id=dto.job_rate_id,
@@ -96,10 +97,11 @@ class WorkLogService:
                 total_amount=total_amount,
                 duration_minutes=duration_minutes,
                 notes=notes,
+                created_at=now,
+                updated_at=now,
             )
             db.add(row)
             db.flush()
-            db.refresh(row)
             return _to_response(
                 row,
                 user_name=user.name,
@@ -363,6 +365,7 @@ class WorkLogService:
             for k, v in data.items():
                 setattr(row, k, v)
             row.total_amount = row.quantity * row.rate
+            row.updated_at = datetime.utcnow()
             db.flush()
 
             # Build response from data already in session — no redundant re-query

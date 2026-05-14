@@ -91,6 +91,7 @@ class RawMaterialService:
             )
             if existing.scalars().first():
                 raise ConflictError("Raw material already exists with this name")
+            now = datetime.utcnow()
             row = RawMaterial(
                 name=normalize_unicode(dto.name) or dto.name,
                 unit_type=dto.unit_type,
@@ -105,10 +106,11 @@ class RawMaterialService:
                 description=normalize_unicode(dto.description) if dto.description else dto.description,
                 treat_as_consume=dto.treat_as_consume,
                 is_active=dto.is_active,
+                created_at=now,
+                updated_at=now,
             )
             db.add(row)
             db.flush()
-            db.refresh(row)
             return _to_response(row)
         return await run_db(_create)
 
@@ -293,8 +295,8 @@ class RawMaterialService:
                 if k in text_fields and isinstance(v, str):
                     v = normalize_unicode(v) or v
                 setattr(row, k, v)
+            row.updated_at = datetime.utcnow()
             db.flush()
-            db.refresh(row)
             return _to_response(row)
         return await run_db(_update)
 
@@ -333,7 +335,9 @@ class RawMaterialService:
                 log_type = LogType.REMOVE
             else:
                 log_type = LogType.ADJUST
+            now = datetime.utcnow()
             row.stock_qty = new_qty
+            row.updated_at = now
             log = InventoryLog(
                 raw_material_id=material_id,
                 user_id=user_id,
@@ -342,10 +346,11 @@ class RawMaterialService:
                 previous_qty=previous_qty,
                 new_qty=new_qty,
                 notes=notes,
+                created_at=now,
+                updated_at=now,
             )
             db.add(log)
             db.flush()
-            db.refresh(row)
             return _to_response(row)
 
         return await run_db(_adjust)

@@ -2,6 +2,7 @@
 Production service - complete stages with automatic material deduction.
 """
 
+from datetime import datetime
 from typing import List, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -129,11 +130,13 @@ class ProductionService:
                     )
 
             # 5. Deduct materials and create inventory logs
+            now = datetime.utcnow()
             materials_deducted: List[MaterialDeduction] = []
             for raw_id, (needed, raw) in by_rm.items():
                 prev_qty = raw.stock_qty or Decimal("0")
                 new_qty = prev_qty - needed
                 raw.stock_qty = new_qty
+                raw.updated_at = now
                 log = InventoryLog(
                     raw_material_id=raw_id,
                     user_id=user_id,
@@ -142,6 +145,8 @@ class ProductionService:
                     previous_qty=prev_qty,
                     new_qty=new_qty,
                     notes=f"Stage {dto.stage_number} completion for product {product.part_no}",
+                    created_at=now,
+                    updated_at=now,
                 )
                 db.add(log)
                 materials_deducted.append(
@@ -158,6 +163,8 @@ class ProductionService:
                 prev_stage_row.quantity = (prev_stage_row.quantity or Decimal("0")) - dto.quantity
                 if prev_stage_row.quantity <= 0:
                     db.delete(prev_stage_row)
+                else:
+                    prev_stage_row.updated_at = now
 
             # 7. Add/update current stage inventory
             curr_query = (
@@ -175,8 +182,8 @@ class ProductionService:
             curr_row = db.execute(curr_query).scalar_one_or_none()
             if curr_row:
                 curr_row.quantity = (curr_row.quantity or Decimal("0")) + dto.quantity
+                curr_row.updated_at = now
                 db.flush()
-                db.refresh(curr_row)
                 stage_inv = _to_stage_inv_response(
                     curr_row,
                     product_part_no=product.part_no,
@@ -188,10 +195,11 @@ class ProductionService:
                     variant=dto.variant,
                     stage_number=dto.stage_number,
                     quantity=dto.quantity,
+                    created_at=now,
+                    updated_at=now,
                 )
                 db.add(new_inv)
                 db.flush()
-                db.refresh(new_inv)
                 stage_inv = _to_stage_inv_response(
                     new_inv,
                     product_part_no=product.part_no,

@@ -3,7 +3,7 @@ BOM (Bill of Materials) line model. Links product to raw material with variant a
 Schema inferred from data/bom-detail.csv.
 """
 
-from sqlalchemy import String, Numeric, Integer, ForeignKey, Index
+from sqlalchemy import String, Numeric, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional
 from decimal import Decimal
@@ -15,12 +15,10 @@ class BOMLine(BaseModel):
     """
     One BOM line: product + raw material + variant (e.g. colour) + batch_qty + raw_qty + stage_number.
     stage_number indicates which production stage uses this material (1=first, 2=second, etc.).
+    ix_bom_product_stage(product_id, stage_number) is created via migration b3a1f7c9d2e4.
     """
 
     __tablename__ = "bom_lines"
-    __table_args__ = (
-        Index("ix_bom_product_stage", "product_id", "stage_number"),
-    )
 
     product_id: Mapped[int] = mapped_column(
         ForeignKey("products.id", ondelete="CASCADE"),
