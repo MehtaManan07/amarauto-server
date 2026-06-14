@@ -17,10 +17,14 @@ from app.modules.products.router import router as products_router
 from app.modules.bom.router import router as bom_router
 from app.modules.dashboard.router import router as dashboard_router
 from app.modules.inventory_logs.router import router as inventory_logs_router
-from app.modules.job_rates.router import router as job_rates_router
-from app.modules.work_logs.router import router as work_logs_router
 from app.modules.parties.router import router as parties_router
-from app.modules.production.router import router as production_router
+
+# --- Phase 2 rewrite pending (new production-flow schema) ---
+# job_rates -> operations, work_logs restructured, production -> batch flow.
+# Their services still reference the old models; routers are disabled until rewritten.
+# from app.modules.operations.router import router as operations_router
+# from app.modules.work_logs.router import router as work_logs_router
+# from app.modules.production.router import router as production_router
 
 # Configure logging to output to console
 logging.basicConfig(
@@ -101,10 +105,11 @@ app.include_router(products_router, prefix="/api")
 app.include_router(bom_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(inventory_logs_router, prefix="/api")
-app.include_router(job_rates_router, prefix="/api")
-app.include_router(work_logs_router, prefix="/api")
 app.include_router(parties_router, prefix="/api")
-app.include_router(production_router, prefix="/api")
+# Phase 2 rewrite pending — see disabled imports above:
+# app.include_router(operations_router, prefix="/api")
+# app.include_router(work_logs_router, prefix="/api")
+# app.include_router(production_router, prefix="/api")
 
 
 @app.get("/demo")

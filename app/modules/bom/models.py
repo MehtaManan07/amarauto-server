@@ -1,9 +1,18 @@
 """
-BOM (Bill of Materials) line model. Links product to raw material with variant and quantities.
-Schema inferred from data/bom-detail.csv.
+BOM (Bill of Materials) line model. Links a product+stage+variant to a raw material
+with the per-batch quantity needed. Source: new-data/bom.csv.
+
+Quantity basis (proven from data):
+    per_unit_consumption = qty_per_batch / batch_size
+    consumption for N units = qty_per_batch * N / batch_size
+`batch_size` is the recipe's standard batch (the CSV QTY col, constant within a product);
+`qty_per_batch` is the total raw material for one such batch.
+
+IMPORTANT: duplicate lines (same product+stage+style+colour+material) are REAL — SUM them,
+do not dedup. Two rows = two cut pieces (e.g. main panel 9.22m + trim 1.66m).
 """
 
-from sqlalchemy import String, Numeric, Integer, ForeignKey
+from sqlalchemy import String, Numeric, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional
 from decimal import Decimal
@@ -12,11 +21,7 @@ from app.core.db.base import BaseModel
 
 
 class BOMLine(BaseModel):
-    """
-    One BOM line: product + raw material + variant (e.g. colour) + batch_qty + raw_qty + stage_number.
-    stage_number indicates which production stage uses this material (1=first, 2=second, etc.).
-    ix_bom_product_stage(product_id, stage_number) is created via migration b3a1f7c9d2e4.
-    """
+    """One material requirement for a product at a given stage and variant."""
 
     __tablename__ = "bom_lines"
 
@@ -25,21 +30,25 @@ class BOMLine(BaseModel):
         nullable=False,
         index=True,
     )
+    stage_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("stages.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     raw_material_id: Mapped[int] = mapped_column(
         ForeignKey("raw_materials.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    variant: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
-    stage_number: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=1, server_default="1", index=True
-    )
-    batch_qty: Mapped[Decimal] = mapped_column(
+    # Variant is 2-D: style (texture, e.g. PUNCH/PLAIN) x colour (BLACK/BEIGE/...).
+    style: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    colour: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    batch_size: Mapped[Decimal] = mapped_column(
         Numeric(15, 2), nullable=False, default=1, server_default="1"
     )
-    raw_qty: Mapped[Decimal] = mapped_column(
-        Numeric(15, 2), nullable=False,
-    )
+    qty_per_batch: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
 
     product: Mapped["Product"] = relationship("Product", foreign_keys=[product_id])
-    raw_material: Mapped["RawMaterial"] = relationship("RawMaterial", foreign_keys=[raw_material_id])
+    raw_material: Mapped["RawMaterial"] = relationship(
+        "RawMaterial", foreign_keys=[raw_material_id]
+    )

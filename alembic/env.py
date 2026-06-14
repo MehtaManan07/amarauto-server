@@ -11,17 +11,23 @@ from sqlalchemy.engine import Connection
 from alembic import context
 from dotenv import load_dotenv
 
-# Import your models here for autogenerate support
+# Import every model here so they register on Base.metadata for autogenerate / baseline.
 from app.core.db.base import Base
 from app.modules.users.models import User
-from app.modules.raw_materials.models import RawMaterial
-from app.modules.products.models import Product
-from app.modules.bom.models import BOMLine
-from app.modules.inventory_logs.models import InventoryLog
-from app.modules.job_rates.models import JobRate
-from app.modules.work_logs.models import WorkLog
 from app.modules.parties.models import Party
-from app.modules.production.models import StageInventory
+from app.modules.raw_materials.models import RawMaterial
+from app.modules.products.models import Product, ProductComponent
+from app.modules.stages.models import Stage
+from app.modules.bom.models import BOMLine
+from app.modules.operations.models import Operation
+from app.modules.production.models import (
+    Batch,
+    BatchMovement,
+    BatchReject,
+    MaterialConsumption,
+)
+from app.modules.work_logs.models import WorkLog
+from app.modules.inventory_logs.models import InventoryLog
 
 # Load .env
 load_dotenv()
