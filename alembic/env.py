@@ -19,7 +19,7 @@ from app.modules.raw_materials.models import RawMaterial
 from app.modules.products.models import Product, ProductComponent
 from app.modules.stages.models import Stage
 from app.modules.bom.models import BOMLine
-from app.modules.operations.models import Operation
+from app.modules.operations.models import Operation, PendingOperation
 from app.modules.production.models import (
     Batch,
     BatchMovement,

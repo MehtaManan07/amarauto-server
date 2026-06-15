@@ -42,7 +42,7 @@ from app.core.db.engine import SessionLocal
 from app.core.utils import normalize_unicode
 from app.modules.products.models import Product
 from app.modules.stages.models import Stage
-from app.modules.operations.models import Operation
+from app.modules.operations.models import Operation, PendingOperation
 
 
 # --- operation-code parser (mirrors verify_operation_codes.py v3) -------------------
@@ -135,6 +135,7 @@ def run_import(csv_path: Path, skip_existing: bool, dry_run: bool):
         return
 
     added = skipped = unresolved = stage_unknown = 0
+    pending_added = pending_skipped = 0
     unresolved_keys: dict = defaultdict(int)
 
     with SessionLocal() as db:
@@ -164,14 +165,43 @@ def run_import(csv_path: Path, skip_existing: bool, dry_run: bool):
             ).all():
                 existing_pairs.add((op[0], op[1]))
 
+        # Always dedup the staging table on raw_code so re-runs don't duplicate pendings.
+        existing_pending = {
+            code for (code,) in db.execute(
+                select(PendingOperation.raw_code).where(
+                    PendingOperation.deleted_at.is_(None)
+                )
+            ).all()
+        }
+
         for r in rows:
             p = parse_code(r["code"], prefix_map)
             # combined resolver: exact column match UNION code-prefix match
             col_match = r["product_col"] if r["product_col"] in master else None
             final_part = col_match or p["product"]
+            stage_id = stage_to_id.get(guess_stage(r["name"]))  # None if unguessed
+
             if not final_part:
+                # Unmapped -> stage into pending_operations (the Operations Inbox).
                 unresolved += 1
                 unresolved_keys[(r["product_col"], p["component"])] += 1
+                if r["code"] in existing_pending:
+                    pending_skipped += 1
+                    continue
+                if not dry_run:
+                    db.add(PendingOperation(
+                        raw_code=r["code"],
+                        raw_product_col=r["product_col"] or None,
+                        name=normalize_unicode(r["name"]) or r["name"],
+                        rate=parse_rate(r["rate"]),
+                        component=(p["component"] or None),
+                        sequence=p["seq"],
+                        side=(p["side"] or None),
+                        guessed_stage_id=stage_id,
+                        suggested_part=p["product"],  # code-prefix guess, if any
+                    ))
+                existing_pending.add(r["code"])
+                pending_added += 1
                 continue
 
             product_id = part_to_id[final_part]
@@ -179,8 +209,6 @@ def run_import(csv_path: Path, skip_existing: bool, dry_run: bool):
                 skipped += 1
                 continue
 
-            stage_name = guess_stage(r["name"])
-            stage_id = stage_to_id.get(stage_name)  # None if unguessed / not seeded
             if stage_id is None:
                 stage_unknown += 1
 
@@ -205,11 +233,13 @@ def run_import(csv_path: Path, skip_existing: bool, dry_run: bool):
             db.commit()
 
     print("\n=========== IMPORT OPERATIONS ===========")
-    print(f"rows in CSV         : {len(rows)}")
-    print(f"{'WOULD ADD' if dry_run else 'added'}           : {added}")
-    print(f"skipped (existing)  : {skipped}")
-    print(f"unresolved (skipped): {unresolved}   <- need client data-fill")
+    print(f"rows in CSV              : {len(rows)}")
+    print(f"operations {'WOULD ADD' if dry_run else 'added    '}     : {added}")
+    print(f"operations skipped (exist): {skipped}")
     print(f"  of added, stage unguessed (stage_id NULL): {stage_unknown}")
+    print(f"unmapped -> pending_operations {'(would add)' if dry_run else 'added'}: {pending_added}")
+    print(f"  pending skipped (already staged): {pending_skipped}")
+    print(f"total unmapped this run  : {unresolved}")
     if unresolved_keys:
         print("\n-- top unresolved (product_col, component) — map by hand --")
         for (pc, comp), n in sorted(unresolved_keys.items(), key=lambda kv: -kv[1])[:12]:
