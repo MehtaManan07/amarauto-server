@@ -152,7 +152,7 @@ def run_import(csv_path: Path, skip_existing: bool, dry_run: bool):
         stages = db.execute(
             select(Stage).where(Stage.deleted_at.is_(None))
         ).scalars().all()
-        stage_to_id = {s.name: s.id for s in stages}
+        stage_to_id = {s.name.lower(): s.id for s in stages}  # case-insensitive (DB names are UPPER)
         if not stage_to_id:
             print("WARNING: no stages in DB — run the baseline migration first.")
 

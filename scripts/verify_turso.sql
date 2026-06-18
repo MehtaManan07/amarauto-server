@@ -42,7 +42,7 @@ FROM bom_lines b
 JOIN products p ON b.product_id = p.id
 JOIN raw_materials rm ON b.raw_material_id = rm.id
 JOIN stages st ON b.stage_id = st.id
-WHERE p.part_no = 'A001' AND b.style = 'BLACK' AND st.name = 'cutting';
+WHERE p.part_no = 'A001' AND b.style = 'BLACK' AND LOWER(st.name) = 'cutting';
 
 SELECT '==== 8. FULL RECIPE A001/BLACK across stages (expect: cutting -> stitching -> finishing) ====' AS section;
 SELECT st.sequence seq, st.name stage, rm.name material, b.qty_per_batch, b.batch_size

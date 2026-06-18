@@ -75,7 +75,7 @@ def products_with_generated_op(db, suffix):
 
 def run(dry_run: bool, cutting_rate: Decimal, finishing_rate: Decimal):
     with SessionLocal() as db:
-        stages = {n: i for (n, i) in db.execute(
+        stages = {n.lower(): i for (n, i) in db.execute(  # case-insensitive (DB names are UPPER)
             select(Stage.name, Stage.id).where(Stage.deleted_at.is_(None))
         ).all()}
         cut_id, stitch_id, fin_id = stages["cutting"], stages["stitching"], stages["finishing"]

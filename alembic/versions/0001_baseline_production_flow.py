@@ -33,10 +33,10 @@ depends_on: Union[str, Sequence[str], None] = None
 # Stage seed data: name -> global sequence. A product's real path is derived from its
 # recipe (many products skip stitching); these are just the ordered stage definitions.
 STAGES = [
-    {"name": "cutting", "sequence": 1},
-    {"name": "stitching", "sequence": 2},
-    {"name": "finishing", "sequence": 3},
-    {"name": "assembly", "sequence": 4},
+    {"name": "CUTTING", "sequence": 1},
+    {"name": "STITCHING", "sequence": 2},
+    {"name": "FINISHING", "sequence": 3},
+    {"name": "ASSEMBLY", "sequence": 4},
 ]
 
 
