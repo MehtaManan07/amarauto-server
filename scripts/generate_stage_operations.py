@@ -9,7 +9,7 @@ we add one operation for that stage to serve as the trigger.
 
 Three steps (all idempotent):
   1. Set every existing operation's stage -> stitching (CSV ops are all stitching; the import's
-     keyword stage-guess was unreliable). Also set pending_operations.guessed_stage -> stitching.
+     keyword stage-guess was unreliable). This includes unmapped ops (product_id NULL).
      Generated ops (code endswith -CUT / -FIN) are left alone.
   2. For each product with cutting BOM and no cutting op  -> add a cutting op  (rate default 10).
   3. For each product with finishing BOM and no finishing op -> add a finishing op (rate default 0).
@@ -40,7 +40,7 @@ from app.core.db.engine import SessionLocal
 from app.modules.stages.models import Stage
 from app.modules.products.models import Product
 from app.modules.bom.models import BOMLine
-from app.modules.operations.models import Operation, PendingOperation
+from app.modules.operations.models import Operation
 
 CUT_SUFFIX = "-CUT"
 FIN_SUFFIX = "-FIN"
@@ -80,17 +80,12 @@ def run(dry_run: bool, cutting_rate: Decimal, finishing_rate: Decimal):
         ).all()}
         cut_id, stitch_id, fin_id = stages["cutting"], stages["stitching"], stages["finishing"]
 
-        # --- Step 1: force non-generated ops + all pending -> stitching ---
+        # --- Step 1: force non-generated ops -> stitching (incl. unmapped, product_id NULL) ---
         to_stitching = db.execute(
             select(func.count()).select_from(Operation).where(
                 Operation.deleted_at.is_(None),
                 ~Operation.code.like(f"%{CUT_SUFFIX}"),
                 ~Operation.code.like(f"%{FIN_SUFFIX}"),
-            )
-        ).scalar()
-        pending_count = db.execute(
-            select(func.count()).select_from(PendingOperation).where(
-                PendingOperation.deleted_at.is_(None)
             )
         ).scalar()
 
@@ -111,11 +106,6 @@ def run(dry_run: bool, cutting_rate: Decimal, finishing_rate: Decimal):
                        Operation.deleted_at.is_(None))
                 .values(stage_id=stitch_id)
             )
-            db.execute(
-                update(PendingOperation)
-                .where(PendingOperation.deleted_at.is_(None))
-                .values(guessed_stage_id=stitch_id)
-            )
             # Steps 2 & 3
             cut_rows = [{
                 "product_id": pid, "stage_id": cut_id, "code": f"{pn}{CUT_SUFFIX}",
@@ -132,7 +122,6 @@ def run(dry_run: bool, cutting_rate: Decimal, finishing_rate: Decimal):
 
     print("\n=========== GENERATE STAGE OPERATIONS ===========")
     print(f"Step 1 — operations set -> stitching : {to_stitching}")
-    print(f"         pending_operations -> stitching: {pending_count}")
     print(f"Step 2 — cutting ops to add (@ {cutting_rate}) : {len(need_cut)}")
     print(f"Step 3 — finishing ops to add (@ {finishing_rate}): {len(need_fin)}")
     print(f"{'(dry run — nothing written)' if dry_run else 'committed.'}")

@@ -5,6 +5,10 @@ The operation_code encodes structure:  <PRODUCT> + <COMPONENT?> + <SEQUENCE?> + 
 e.g. AS1-B5L = product AS01, component B (seat), sequence 5, side L.
 Parsed/loaded by scripts/import_operations.py (v3 combined resolver).
 
+- product_id is NULLABLE: an operation whose product is not yet known is "unmapped"
+  (product_id IS NULL). product_hint carries the raw CSV product text as a label so it can
+  be assigned in-app later. (This replaced the old separate pending_operations table — the
+  only thing that made an op "pending" was a missing product, so it is just a NULL FK now.)
 - stage_id is nullable: stage is NOT in the code, it is guessed from the Gujarati
   operation name or assigned later in the recipe editor.
 - rate is nullable: a few ops have missing/zero rates (client fills in-app).
@@ -20,13 +24,14 @@ from app.core.db.base import BaseModel
 
 
 class Operation(BaseModel):
-    """A paid operation: who does what work, on which product/stage, at what rate."""
+    """A paid operation: who does what work, on which product/stage, at what rate.
+    product_id IS NULL == unmapped (an operation we have not yet tied to a product)."""
 
     __tablename__ = "operations"
 
-    product_id: Mapped[int] = mapped_column(
+    product_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("products.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     stage_id: Mapped[Optional[int]] = mapped_column(
@@ -40,43 +45,6 @@ class Operation(BaseModel):
     sequence: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     component: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
     side: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)  # L / R / F
-
-
-# Operation status values for the inbox staging row.
-PENDING = "pending"
-PENDING_RESOLVED = "resolved"
-PENDING_IGNORED = "ignored"
-
-
-class PendingOperation(BaseModel):
-    """
-    An operation from job-list.csv that did NOT auto-resolve to a product (124 of 288).
-
-    Staged here instead of in `operations` so that table stays clean (every row valid).
-    Surfaced in the UI as an "Operations Inbox" worklist; the admin resolves each by
-    attaching/creating a product or mapping it as an assembly component, at which point a
-    real `operations` row is created and `resolved_op_id` is set.
-
-    The two buckets: 91 ops across 8 Cushport assembly parts (need parent map) + 33 ops
-    referencing 14 products missing from products.csv.
-    """
-
-    __tablename__ = "pending_operations"
-
-    raw_code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
-    raw_product_col: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2), nullable=True)
-    component: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    sequence: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    side: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
-    guessed_stage_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("stages.id", ondelete="SET NULL"), nullable=True
-    )
-    suggested_part: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default=PENDING, server_default=PENDING, index=True
-    )
-    resolved_op_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("operations.id", ondelete="SET NULL"), nullable=True
-    )
+    # Raw CSV product text for unmapped ops (e.g. "C003 kia") — a label to help assign a
+    # product later. NULL once mapped / for ops created against a known product.
+    product_hint: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

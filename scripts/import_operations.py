@@ -42,7 +42,7 @@ from app.core.db.engine import SessionLocal
 from app.core.utils import normalize_unicode
 from app.modules.products.models import Product
 from app.modules.stages.models import Stage
-from app.modules.operations.models import Operation, PendingOperation
+from app.modules.operations.models import Operation
 
 
 # --- operation-code parser (mirrors verify_operation_codes.py v3) -------------------
@@ -165,11 +165,12 @@ def run_import(csv_path: Path, skip_existing: bool, dry_run: bool):
             ).all():
                 existing_pairs.add((op[0], op[1]))
 
-        # Always dedup the staging table on raw_code so re-runs don't duplicate pendings.
-        existing_pending = {
+        # Unmapped ops now live in `operations` with product_id NULL (no separate table).
+        # Dedup them on code so re-runs don't duplicate.
+        existing_unmapped = {
             code for (code,) in db.execute(
-                select(PendingOperation.raw_code).where(
-                    PendingOperation.deleted_at.is_(None)
+                select(Operation.code).where(
+                    Operation.product_id.is_(None), Operation.deleted_at.is_(None)
                 )
             ).all()
         }
@@ -182,25 +183,25 @@ def run_import(csv_path: Path, skip_existing: bool, dry_run: bool):
             stage_id = stage_to_id.get(guess_stage(r["name"]))  # None if unguessed
 
             if not final_part:
-                # Unmapped -> stage into pending_operations (the Operations Inbox).
+                # Unmapped -> an operation with product_id NULL; raw text -> product_hint.
                 unresolved += 1
                 unresolved_keys[(r["product_col"], p["component"])] += 1
-                if r["code"] in existing_pending:
+                if r["code"] in existing_unmapped:
                     pending_skipped += 1
                     continue
                 if not dry_run:
-                    db.add(PendingOperation(
-                        raw_code=r["code"],
-                        raw_product_col=r["product_col"] or None,
+                    db.add(Operation(
+                        product_id=None,
+                        stage_id=stage_id,
+                        code=r["code"],
                         name=normalize_unicode(r["name"]) or r["name"],
                         rate=parse_rate(r["rate"]),
                         component=(p["component"] or None),
                         sequence=p["seq"],
                         side=(p["side"] or None),
-                        guessed_stage_id=stage_id,
-                        suggested_part=p["product"],  # code-prefix guess, if any
+                        product_hint=r["product_col"] or None,
                     ))
-                existing_pending.add(r["code"])
+                existing_unmapped.add(r["code"])
                 pending_added += 1
                 continue
 
@@ -237,8 +238,8 @@ def run_import(csv_path: Path, skip_existing: bool, dry_run: bool):
     print(f"operations {'WOULD ADD' if dry_run else 'added    '}     : {added}")
     print(f"operations skipped (exist): {skipped}")
     print(f"  of added, stage unguessed (stage_id NULL): {stage_unknown}")
-    print(f"unmapped -> pending_operations {'(would add)' if dry_run else 'added'}: {pending_added}")
-    print(f"  pending skipped (already staged): {pending_skipped}")
+    print(f"unmapped -> operations (product_id NULL) {'(would add)' if dry_run else 'added'}: {pending_added}")
+    print(f"  unmapped skipped (already loaded): {pending_skipped}")
     print(f"total unmapped this run  : {unresolved}")
     if unresolved_keys:
         print("\n-- top unresolved (product_col, component) — map by hand --")

@@ -24,7 +24,8 @@ async def create_operation(
     dto: OperationCreateDto,
     current_user: TokenData = Depends(require_any_role),
 ):
-    """Add an operation. code must be unique; product_id (and stage_id if given) must exist."""
+    """Add an operation. code must be unique; product_id (if given) and stage_id (if given)
+    must exist. Omit product_id to create an unmapped op (assign a product later)."""
     return await OperationService.create(dto)
 
 
@@ -33,17 +34,19 @@ async def list_operations(
     search: Optional[str] = Query(None, description="Search across code, name, component (words AND'd)"),
     product_id: Optional[int] = Query(None, gt=0, description="Filter to one product's operations"),
     stage_id: Optional[int] = Query(None, gt=0, description="Filter to one stage's operations"),
+    unmapped: Optional[bool] = Query(None, description="true = only unmapped ops (no product); false = only mapped"),
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(25, ge=1, le=1000, description="Items per page (max 1000)"),
     current_user: TokenData = Depends(require_any_role),
 ):
-    """List operations with pagination. Optional search + product_id / stage_id filters."""
+    """List operations with pagination. Optional search + product_id / stage_id / unmapped filters."""
     return await OperationService.find_all_paginated(
         page=page,
         page_size=page_size,
         search=search,
         product_id=product_id,
         stage_id=stage_id,
+        unmapped=unmapped,
     )
 
 

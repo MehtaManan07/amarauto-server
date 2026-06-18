@@ -25,7 +25,8 @@ def _normalize_side(v: Optional[str]) -> Optional[str]:
 
 
 class OperationCreateDto(BaseModel):
-    product_id: int = Field(..., gt=0)
+    # product_id is optional: omit it to create an UNMAPPED op (product assigned later).
+    product_id: Optional[int] = Field(None, gt=0)
     stage_id: Optional[int] = Field(None, gt=0)
     code: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=255)
@@ -33,6 +34,7 @@ class OperationCreateDto(BaseModel):
     sequence: Optional[int] = Field(None, ge=0)
     component: Optional[str] = Field(None, max_length=50)
     side: Optional[str] = Field(None, max_length=5, description="L / R / F")
+    product_hint: Optional[str] = Field(None, max_length=255, description="Raw product text for unmapped ops")
 
     _side = field_validator("side")(_normalize_side)
 
@@ -49,6 +51,7 @@ class OperationUpdateDto(BaseModel):
     sequence: Optional[int] = Field(None, ge=0)
     component: Optional[str] = Field(None, max_length=50)
     side: Optional[str] = Field(None, max_length=5, description="L / R / F")
+    product_hint: Optional[str] = Field(None, max_length=255)
 
     _side = field_validator("side")(_normalize_side)
 
@@ -58,7 +61,7 @@ class OperationUpdateDto(BaseModel):
 
 class OperationResponse(BaseModel):
     id: int
-    product_id: int
+    product_id: Optional[int] = None  # NULL == unmapped
     stage_id: Optional[int] = None
     code: str
     name: str
@@ -66,6 +69,7 @@ class OperationResponse(BaseModel):
     sequence: Optional[int] = None
     component: Optional[str] = None
     side: Optional[str] = None
+    product_hint: Optional[str] = None
     # Enriched for display (recipe editor / worklog): not stored on the row.
     product_part_no: Optional[str] = None
     stage_name: Optional[str] = None

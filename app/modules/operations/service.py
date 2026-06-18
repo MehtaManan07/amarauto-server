@@ -41,6 +41,7 @@ def _to_response(
         sequence=row.sequence,
         component=row.component,
         side=row.side,
+        product_hint=row.product_hint,
         product_part_no=product_part_no,
         stage_name=stage_name,
         created_at=row.created_at,
@@ -50,10 +51,11 @@ def _to_response(
 
 
 def _enriched_query():
-    """Operation rows joined to part_no + stage name (stage is an outer join — nullable)."""
+    """Operation rows joined to part_no + stage name. BOTH are OUTER joins: product_id is
+    nullable (unmapped ops) and stage_id is nullable."""
     return (
         select(Operation, Product.part_no, Stage.name)
-        .join(Product, Operation.product_id == Product.id)
+        .outerjoin(Product, Operation.product_id == Product.id)
         .outerjoin(Stage, Operation.stage_id == Stage.id)
         .where(Operation.deleted_at.is_(None))
     )
@@ -91,7 +93,8 @@ class OperationService:
     @staticmethod
     async def create(dto: OperationCreateDto) -> OperationResponse:
         def _create(db: Session) -> OperationResponse:
-            product = _require_product(db, dto.product_id)
+            # product_id is optional — omit for an unmapped op (assign a product later).
+            product = _require_product(db, dto.product_id) if dto.product_id is not None else None
             stage = _require_stage(db, dto.stage_id) if dto.stage_id is not None else None
             _guard_unique_code(db, dto.code)
 
@@ -105,12 +108,13 @@ class OperationService:
                 sequence=dto.sequence,
                 component=normalize_unicode(dto.component) if dto.component else dto.component,
                 side=dto.side,
+                product_hint=normalize_unicode(dto.product_hint) if dto.product_hint else dto.product_hint,
                 created_at=now,
                 updated_at=now,
             )
             db.add(row)
             db.flush()
-            return _to_response(row, product.part_no, stage.name if stage else None)
+            return _to_response(row, product.part_no if product else None, stage.name if stage else None)
 
         return await run_db(_create)
 
@@ -121,11 +125,16 @@ class OperationService:
         search: Optional[str] = None,
         product_id: Optional[int] = None,
         stage_id: Optional[int] = None,
+        unmapped: Optional[bool] = None,
     ) -> dict:
         words = search_words(search)
 
         def _find(db: Session) -> dict:
             query = _enriched_query()
+            if unmapped is True:
+                query = query.where(Operation.product_id.is_(None))
+            elif unmapped is False:
+                query = query.where(Operation.product_id.isnot(None))
             if product_id is not None:
                 query = query.where(Operation.product_id == product_id)
             if stage_id is not None:
@@ -137,6 +146,7 @@ class OperationService:
                         Operation.code.ilike(pattern),
                         Operation.name.ilike(pattern),
                         Operation.component.ilike(pattern),
+                        Operation.product_hint.ilike(pattern),
                     )
                 )
             # Stable, useful order: by product, then stage sequence-ish, then op sequence.
@@ -181,7 +191,7 @@ class OperationService:
             if "code" in data and data["code"] is not None:
                 _guard_unique_code(db, data["code"], exclude_id=operation_id)
 
-            text_fields = ("name", "component")
+            text_fields = ("name", "component", "product_hint")
             for k, v in data.items():
                 if k in text_fields and isinstance(v, str):
                     v = normalize_unicode(v) or v
