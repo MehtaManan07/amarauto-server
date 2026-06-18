@@ -1,9 +1,9 @@
 """
-Product DTOs. BOM lines placeholder for get BOM (filled when BOM module exists).
+Product DTOs. Master-data CRUD only; recipe/BOM lives in the BOM module.
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, List, Any, Dict
+from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
 
@@ -19,6 +19,8 @@ class ProductCreateDto(BaseModel):
     part_no: str = Field(..., min_length=1, max_length=100)
     model_name: Optional[str] = Field(None, max_length=255)
     is_active: bool = True
+    is_manufactured: bool = False
+    is_component: bool = False
     product_image: Optional[str] = Field(None, max_length=512)
     distributor_price: Optional[Decimal] = Field(None, ge=0)
     dealer_price: Optional[Decimal] = Field(None, ge=0)
@@ -40,6 +42,8 @@ class ProductUpdateDto(BaseModel):
     part_no: Optional[str] = Field(None, min_length=1, max_length=100)
     model_name: Optional[str] = Field(None, max_length=255)
     is_active: Optional[bool] = None
+    is_manufactured: Optional[bool] = None
+    is_component: Optional[bool] = None
     product_image: Optional[str] = Field(None, max_length=512)
     distributor_price: Optional[Decimal] = Field(None, ge=0)
     dealer_price: Optional[Decimal] = Field(None, ge=0)
@@ -62,6 +66,8 @@ class ProductResponse(BaseModel):
     part_no: str
     model_name: Optional[str] = None
     is_active: bool
+    is_manufactured: bool
+    is_component: bool
     product_image: Optional[str] = None
     distributor_price: Optional[Decimal] = None
     dealer_price: Optional[Decimal] = None
@@ -84,30 +90,6 @@ class ProductPaginatedResponse(BaseModel):
     page_size: int
     total_pages: int
     has_more: bool
-
-    class Config:
-        from_attributes = True
-
-
-class BOMLineResponse(BaseModel):
-    """Single BOM line (raw material + qty). Filled by BOM module later."""
-    raw_material_id: Optional[int] = None
-    raw_material_name: Optional[str] = None
-    variant: Optional[str] = None
-    batch_qty: Optional[Decimal] = None
-    raw_qty: Optional[Decimal] = None
-
-    class Config:
-        from_attributes = True
-
-
-class ProductDetailResponse(ProductResponse):
-    """Product with BOM grouped by variant."""
-
-    bom_by_variant: Dict[str, List[BOMLineResponse]] = Field(
-        default_factory=dict,
-        description="Variant name -> list of BOM lines. Use 'Default' for variant=None.",
-    )
 
     class Config:
         from_attributes = True
