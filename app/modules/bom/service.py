@@ -1,5 +1,10 @@
 """
-BOM service. find_all with search; find_by_product(product_id, variant).
+BOM service (new production-flow schema). CRUD + list (paginated, filterable),
+distinct style/colour variants per product, and a production calculator.
+
+Quantity basis: per_unit = qty_per_batch / batch_size (batch_size > 0, enforced by DTO).
+Duplicate lines are SUMMED, never deduped — create always adds a distinct line, and the
+production calculator aggregates per raw material across all of a variant's lines.
 """
 
 from typing import List, Optional
@@ -9,71 +14,133 @@ from datetime import datetime
 from decimal import Decimal
 
 from app.core.db.engine import run_db
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import paginate_multi, build_paginated_response
 from app.core.utils import search_words, normalize_unicode
 from app.modules.products.models import Product
 from app.modules.raw_materials.models import RawMaterial
+from app.modules.stages.models import Stage
 from .models import BOMLine
 from .schemas import (
     BOMLineCreateDto,
     BOMLineUpdateDto,
     BOMLineResponse,
+    BOMVariantResponse,
     ProductionCalcLineResponse,
     ProductionCalcResponse,
 )
 
 
+def _per_unit(qty_per_batch: Decimal, batch_size: Decimal) -> Optional[Decimal]:
+    if not batch_size:
+        return None
+    return qty_per_batch / batch_size
+
+
 def _to_response(
     row: BOMLine,
     raw_material_name: Optional[str] = None,
+    raw_material_unit: Optional[str] = None,
     product_name: Optional[str] = None,
     product_part_no: Optional[str] = None,
+    stage_name: Optional[str] = None,
 ) -> BOMLineResponse:
     return BOMLineResponse(
         id=row.id,
         product_id=row.product_id,
+        stage_id=row.stage_id,
         raw_material_id=row.raw_material_id,
+        style=row.style,
+        colour=row.colour,
+        batch_size=row.batch_size,
+        qty_per_batch=row.qty_per_batch,
+        per_unit=_per_unit(row.qty_per_batch, row.batch_size),
         product_name=product_name,
         product_part_no=product_part_no,
         raw_material_name=raw_material_name,
-        variant=row.variant,
-        stage_number=getattr(row, "stage_number", 1),
-        batch_qty=row.batch_qty,
-        raw_qty=row.raw_qty,
+        raw_material_unit=raw_material_unit,
+        stage_name=stage_name,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        deleted_at=row.deleted_at,
     )
+
+
+def _enriched_query():
+    """BOM rows joined to material (name/unit), product (name/part_no), stage (name).
+    Stage is an OUTER join — stage_id is nullable."""
+    return (
+        select(BOMLine, RawMaterial.name, RawMaterial.unit_type, Product.name, Product.part_no, Stage.name)
+        .join(RawMaterial, BOMLine.raw_material_id == RawMaterial.id)
+        .join(Product, BOMLine.product_id == Product.id)
+        .outerjoin(Stage, BOMLine.stage_id == Stage.id)
+        .where(
+            BOMLine.deleted_at.is_(None),
+            RawMaterial.deleted_at.is_(None),
+            Product.deleted_at.is_(None),
+        )
+    )
+
+
+def _row_to_response(row) -> BOMLineResponse:
+    line, rm_name, rm_unit, prod_name, prod_part_no, stage_name = row
+    return _to_response(
+        line,
+        raw_material_name=rm_name,
+        raw_material_unit=rm_unit,
+        product_name=prod_name,
+        product_part_no=prod_part_no,
+        stage_name=stage_name,
+    )
+
+
+def _require_product(db: Session, product_id: int) -> Product:
+    product = db.execute(
+        select(Product).where(Product.id == product_id, Product.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if not product:
+        raise ValidationError(f"Product {product_id} does not exist")
+    return product
+
+
+def _require_raw_material(db: Session, raw_material_id: int) -> RawMaterial:
+    raw = db.execute(
+        select(RawMaterial).where(
+            RawMaterial.id == raw_material_id, RawMaterial.deleted_at.is_(None)
+        )
+    ).scalar_one_or_none()
+    if not raw:
+        raise ValidationError(f"Raw material {raw_material_id} does not exist")
+    return raw
+
+
+def _require_stage(db: Session, stage_id: int) -> Stage:
+    stage = db.execute(
+        select(Stage).where(Stage.id == stage_id, Stage.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if not stage:
+        raise ValidationError(f"Stage {stage_id} does not exist")
+    return stage
 
 
 class BOMService:
     @staticmethod
     async def create(dto: BOMLineCreateDto) -> BOMLineResponse:
         def _create(db: Session) -> BOMLineResponse:
-            product = db.execute(
-                select(Product).where(
-                    Product.id == dto.product_id,
-                    Product.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
-            if not product:
-                raise NotFoundError("Product", dto.product_id)
-            raw = db.execute(
-                select(RawMaterial).where(
-                    RawMaterial.id == dto.raw_material_id,
-                    RawMaterial.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
-            if not raw:
-                raise NotFoundError("RawMaterial", dto.raw_material_id)
+            product = _require_product(db, dto.product_id)
+            raw = _require_raw_material(db, dto.raw_material_id)
+            stage = _require_stage(db, dto.stage_id) if dto.stage_id is not None else None
+
+            # No dedup/merge: duplicate lines are intentional (sum-don't-dedup).
             now = datetime.utcnow()
             row = BOMLine(
                 product_id=dto.product_id,
                 raw_material_id=dto.raw_material_id,
-                variant=normalize_unicode(dto.variant) if dto.variant else dto.variant,
-                stage_number=dto.stage_number,
-                batch_qty=dto.batch_qty,
-                raw_qty=dto.raw_qty,
+                stage_id=dto.stage_id,
+                style=normalize_unicode(dto.style) if dto.style else dto.style,
+                colour=normalize_unicode(dto.colour) if dto.colour else dto.colour,
+                batch_size=dto.batch_size,
+                qty_per_batch=dto.qty_per_batch,
                 created_at=now,
                 updated_at=now,
             )
@@ -82,62 +149,13 @@ class BOMService:
             return _to_response(
                 row,
                 raw_material_name=raw.name,
+                raw_material_unit=raw.unit_type,
                 product_name=product.name,
                 product_part_no=product.part_no,
+                stage_name=stage.name if stage else None,
             )
+
         return await run_db(_create)
-
-    @staticmethod
-    async def find_all(
-        search: Optional[str] = None,
-        product_id: Optional[int] = None,
-        raw_material_id: Optional[int] = None,
-        variant: Optional[str] = None,
-    ) -> List[BOMLineResponse]:
-        """
-        List non-deleted BOM lines. Optional search (raw material name, variant);
-        optional product_id, raw_material_id and variant filters.
-        """
-        words = search_words(search)
-
-        def _find_all(db: Session) -> List[BOMLineResponse]:
-            query = (
-                select(BOMLine, RawMaterial.name, Product.name, Product.part_no)
-                .join(RawMaterial, BOMLine.raw_material_id == RawMaterial.id)
-                .join(Product, BOMLine.product_id == Product.id)
-                .where(
-                    BOMLine.deleted_at.is_(None),
-                    RawMaterial.deleted_at.is_(None),
-                    Product.deleted_at.is_(None),
-                )
-            )
-            if product_id is not None:
-                query = query.where(BOMLine.product_id == product_id)
-            if raw_material_id is not None:
-                query = query.where(BOMLine.raw_material_id == raw_material_id)
-            if variant is not None:
-                query = query.where(BOMLine.variant == variant)
-            for word in words:
-                pattern = f"%{word}%"
-                query = query.where(
-                    or_(
-                        RawMaterial.name.ilike(pattern),
-                        BOMLine.variant.ilike(pattern),
-                    )
-                )
-            query = query.order_by(BOMLine.product_id, BOMLine.variant, BOMLine.id)
-            result = db.execute(query)
-            rows = result.all()
-            return [
-                _to_response(
-                    line,
-                    raw_material_name=rm_name,
-                    product_name=prod_name,
-                    product_part_no=prod_part_no,
-                )
-                for line, rm_name, prod_name, prod_part_no in rows
-            ]
-        return await run_db(_find_all)
 
     @staticmethod
     async def find_all_paginated(
@@ -146,90 +164,69 @@ class BOMService:
         search: Optional[str] = None,
         product_id: Optional[int] = None,
         raw_material_id: Optional[int] = None,
-        variant: Optional[str] = None,
+        stage_id: Optional[int] = None,
+        style: Optional[str] = None,
+        colour: Optional[str] = None,
     ) -> dict:
-        """
-        List BOM lines with pagination. Optional search, product_id, raw_material_id, variant filters.
-        """
         words = search_words(search)
 
-        def _find_all_paginated(db: Session) -> dict:
-            query = (
-                select(BOMLine, RawMaterial.name, Product.name, Product.part_no)
-                .join(RawMaterial, BOMLine.raw_material_id == RawMaterial.id)
-                .join(Product, BOMLine.product_id == Product.id)
-                .where(
-                    BOMLine.deleted_at.is_(None),
-                    RawMaterial.deleted_at.is_(None),
-                    Product.deleted_at.is_(None),
-                )
-            )
+        def _find(db: Session) -> dict:
+            query = _enriched_query()
             if product_id is not None:
                 query = query.where(BOMLine.product_id == product_id)
             if raw_material_id is not None:
                 query = query.where(BOMLine.raw_material_id == raw_material_id)
-            if variant is not None:
-                query = query.where(BOMLine.variant == variant)
+            if stage_id is not None:
+                query = query.where(BOMLine.stage_id == stage_id)
+            if style is not None:
+                query = query.where(BOMLine.style == style)
+            if colour is not None:
+                query = query.where(BOMLine.colour == colour)
             for word in words:
                 pattern = f"%{word}%"
                 query = query.where(
                     or_(
                         RawMaterial.name.ilike(pattern),
-                        BOMLine.variant.ilike(pattern),
+                        BOMLine.style.ilike(pattern),
+                        BOMLine.colour.ilike(pattern),
                     )
                 )
-            query = query.order_by(BOMLine.product_id, BOMLine.variant, BOMLine.id)
-
-            # Single query with COUNT(*) OVER() window function
+            query = query.order_by(
+                BOMLine.product_id, BOMLine.stage_id, BOMLine.style, BOMLine.colour, BOMLine.id
+            )
             rows, total = paginate_multi(db, query, page, page_size)
-
-            items = [
-                _to_response(
-                    line,
-                    raw_material_name=rm_name,
-                    product_name=prod_name,
-                    product_part_no=prod_part_no,
-                )
-                for line, rm_name, prod_name, prod_part_no in rows
-            ]
+            items = [_row_to_response(r) for r in rows]
             return build_paginated_response(items, total, page, page_size)
 
-        return await run_db(_find_all_paginated)
+        return await run_db(_find)
 
     @staticmethod
-    async def get_variants(product_id: int) -> List[str]:
-        """Return distinct variants for a product from BOM lines."""
-        def _get_variants(db: Session) -> List[str]:
-            stmt = (
-                select(BOMLine.variant)
-                .where(
-                    BOMLine.product_id == product_id,
-                    BOMLine.deleted_at.is_(None),
-                    BOMLine.variant.isnot(None),
-                )
+    async def get_variants(product_id: int) -> List[BOMVariantResponse]:
+        """Distinct style x colour combos a product has a BOM for (variant picker)."""
+        def _get(db: Session) -> List[BOMVariantResponse]:
+            rows = db.execute(
+                select(BOMLine.style, BOMLine.colour)
+                .where(BOMLine.product_id == product_id, BOMLine.deleted_at.is_(None))
                 .distinct()
-                .order_by(BOMLine.variant)
-            )
-            result = db.execute(stmt)
-            return [r for r in result.scalars().all() if r]
+                .order_by(BOMLine.style, BOMLine.colour)
+            ).all()
+            return [BOMVariantResponse(style=s, colour=c) for (s, c) in rows]
 
-        return await run_db(_get_variants)
+        return await run_db(_get)
 
     @staticmethod
     async def get_production_calc(
         product_id: int,
-        variant: Optional[str],
         quantity: int,
+        style: Optional[str] = None,
+        colour: Optional[str] = None,
     ) -> ProductionCalcResponse:
-        """
-        Calculate material requirements for producing `quantity` units.
-        Aggregates by raw material; returns shortage, order cost, max producible units.
-        """
+        """Material requirements + shortage for producing `quantity` units of a variant.
+        Aggregates per raw material (summing duplicate BOM lines)."""
         def _calc(db: Session) -> ProductionCalcResponse:
             product = db.execute(
                 select(Product).where(
-                    Product.id == product_id,
-                    Product.deleted_at.is_(None),
+                    Product.id == product_id, Product.deleted_at.is_(None)
                 )
             ).scalar_one_or_none()
             if not product:
@@ -244,20 +241,20 @@ class BOMService:
                     RawMaterial.deleted_at.is_(None),
                 )
             )
-            if variant is not None:
-                bom_query = bom_query.where(BOMLine.variant == variant)
-            bom_query = bom_query.order_by(BOMLine.raw_material_id)
-            result = db.execute(bom_query)
-            rows = result.all()
+            if style is not None:
+                bom_query = bom_query.where(BOMLine.style == style)
+            if colour is not None:
+                bom_query = bom_query.where(BOMLine.colour == colour)
+            rows = db.execute(bom_query.order_by(BOMLine.raw_material_id)).all()
 
-            # Aggregate by raw_material_id (same material can appear multiple times in BOM)
+            # Aggregate by raw material — a material can appear on several lines (sum them).
             by_rm: dict[int, tuple[Decimal, RawMaterial]] = {}
             for line, raw in rows:
-                needed_per_unit = line.raw_qty / line.batch_qty if line.batch_qty else Decimal("0")
-                total_needed = needed_per_unit * quantity
+                per_unit = _per_unit(line.qty_per_batch, line.batch_size) or Decimal("0")
+                total_needed = per_unit * quantity
                 if raw.id in by_rm:
-                    prev_needed, _ = by_rm[raw.id]
-                    by_rm[raw.id] = (prev_needed + total_needed, raw)
+                    prev, _ = by_rm[raw.id]
+                    by_rm[raw.id] = (prev + total_needed, raw)
                 else:
                     by_rm[raw.id] = (total_needed, raw)
 
@@ -265,7 +262,7 @@ class BOMService:
             total_order_cost = Decimal("0")
             max_producible = float("inf")
 
-            for raw_id, (needed_qty, raw) in by_rm.items():
+            for _, (needed_qty, raw) in by_rm.items():
                 current_stock = raw.stock_qty or Decimal("0")
                 shortage = max(Decimal("0"), needed_qty - current_stock)
                 status = "ok" if shortage == 0 else "low"
@@ -299,7 +296,8 @@ class BOMService:
             return ProductionCalcResponse(
                 product_part_no=product.part_no,
                 product_name=product.name,
-                variant=variant,
+                style=style,
+                colour=colour,
                 quantity=quantity,
                 lines=lines,
                 total_order_cost=total_order_cost,
@@ -309,102 +307,59 @@ class BOMService:
         return await run_db(_calc)
 
     @staticmethod
-    async def find_by_product(
-        product_id: int,
-        variant: Optional[str] = None,
-    ) -> List[BOMLineResponse]:
-        """BOM lines for a product (and optional variant). Used by products get_bom."""
-        return await BOMService.find_all(
-            product_id=product_id,
-            variant=variant,
-        )
-
-    @staticmethod
     async def find_one(line_id: int) -> BOMLineResponse:
         def _find(db: Session) -> BOMLineResponse:
-            result = db.execute(
-                select(BOMLine, RawMaterial.name, Product.name, Product.part_no)
-                .join(RawMaterial, BOMLine.raw_material_id == RawMaterial.id)
-                .join(Product, BOMLine.product_id == Product.id)
-                .where(
-                    BOMLine.id == line_id,
-                    BOMLine.deleted_at.is_(None),
-                )
-            )
-            row = result.one_or_none()
+            row = db.execute(
+                _enriched_query().where(BOMLine.id == line_id)
+            ).first()
             if not row:
                 raise NotFoundError("BOMLine", line_id)
-            line, rm_name, prod_name, prod_part_no = row
-            return _to_response(
-                line,
-                raw_material_name=rm_name,
-                product_name=prod_name,
-                product_part_no=prod_part_no,
-            )
+            return _row_to_response(row)
+
         return await run_db(_find)
 
     @staticmethod
     async def update(line_id: int, dto: BOMLineUpdateDto) -> BOMLineResponse:
         def _update(db: Session) -> BOMLineResponse:
-            result = db.execute(
+            row = db.execute(
                 select(BOMLine).where(
-                    BOMLine.id == line_id,
-                    BOMLine.deleted_at.is_(None),
+                    BOMLine.id == line_id, BOMLine.deleted_at.is_(None)
                 )
-            )
-            row = result.scalar_one_or_none()
+            ).scalar_one_or_none()
             if not row:
                 raise NotFoundError("BOMLine", line_id)
-            product = None
-            raw = None
-            if dto.product_id is not None:
-                product = db.execute(
-                    select(Product).where(
-                        Product.id == dto.product_id,
-                        Product.deleted_at.is_(None),
-                    )
-                ).scalar_one_or_none()
-                if not product:
-                    raise NotFoundError("Product", dto.product_id)
-            if dto.raw_material_id is not None:
-                raw = db.execute(
-                    select(RawMaterial).where(
-                        RawMaterial.id == dto.raw_material_id,
-                        RawMaterial.deleted_at.is_(None),
-                    )
-                ).scalar_one_or_none()
-                if not raw:
-                    raise NotFoundError("RawMaterial", dto.raw_material_id)
+
             data = dto.model_dump(exclude_unset=True)
+            if "product_id" in data and data["product_id"] is not None:
+                _require_product(db, data["product_id"])
+            if "raw_material_id" in data and data["raw_material_id"] is not None:
+                _require_raw_material(db, data["raw_material_id"])
+            if "stage_id" in data and data["stage_id"] is not None:
+                _require_stage(db, data["stage_id"])
+
+            text_fields = ("style", "colour")
             for k, v in data.items():
-                if k == "variant" and isinstance(v, str):
+                if k in text_fields and isinstance(v, str):
                     v = normalize_unicode(v) or v
                 setattr(row, k, v)
             row.updated_at = datetime.utcnow()
             db.flush()
-            if raw is None:
-                raw = db.execute(
-                    select(RawMaterial).where(RawMaterial.id == row.raw_material_id)
-                ).scalar_one_or_none()
-            if product is None:
-                product = db.execute(
-                    select(Product).where(Product.id == row.product_id)
-                ).scalar_one_or_none()
-            return _to_response(
-                row,
-                raw_material_name=raw.name if raw else None,
-                product_name=product.name if product else None,
-                product_part_no=product.part_no if product else None,
+
+            return _row_to_response(
+                db.execute(_enriched_query().where(BOMLine.id == line_id)).first()
             )
+
         return await run_db(_update)
 
     @staticmethod
     async def remove(line_id: int) -> None:
         def _remove(db: Session) -> None:
-            result = db.execute(select(BOMLine).where(BOMLine.id == line_id))
-            row = result.scalar_one_or_none()
+            row = db.execute(
+                select(BOMLine).where(BOMLine.id == line_id)
+            ).scalar_one_or_none()
             if not row:
                 raise NotFoundError("BOMLine", line_id)
             row.deleted_at = datetime.utcnow()
             db.flush()
+
         await run_db(_remove)
