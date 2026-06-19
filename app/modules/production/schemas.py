@@ -67,9 +67,49 @@ class BatchResponse(BaseModel):
         from_attributes = True
 
 
+class ConsumptionLine(BaseModel):
+    """One material consumed by a move into a stage (per-material, lines summed)."""
+    raw_material_id: int
+    raw_material_name: Optional[str] = None
+    unit_type: Optional[str] = None
+    qty_consumed: Decimal
+    previous_stock: Optional[Decimal] = None
+    new_stock: Optional[Decimal] = None
+    short: bool = False  # new_stock < 0 (warn-and-allow)
+
+
 class BatchDetailResponse(BatchResponse):
-    """Batch + full per-stage WIP breakdown."""
+    """Batch + full per-stage WIP breakdown.
+    On create/advance, `consumption` + `warnings` describe what that move just consumed."""
     wip: List[BatchWipLine] = Field(default_factory=list)
+    consumption: List[ConsumptionLine] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class BatchAdvanceDto(BaseModel):
+    """Move `quantity` units from one stage to the next (consumes the target stage's BOM)."""
+    quantity: Decimal = Field(..., gt=0)
+    from_stage_id: Optional[int] = Field(None, gt=0, description="Defaults to the batch's current stage")
+    to_stage_id: Optional[int] = Field(None, gt=0, description="Defaults to the next recipe stage by sequence")
+
+
+class MaterialPreviewLine(BaseModel):
+    raw_material_id: int
+    raw_material_name: str
+    unit_type: str
+    needed_qty: Decimal
+    current_stock: Decimal
+    shortage: Decimal
+    status: str  # "ok" | "low"
+
+
+class MaterialPreviewResponse(BaseModel):
+    """What moving `quantity` into `stage` would consume (no writes)."""
+    batch_id: int
+    stage_id: int
+    stage_name: str
+    quantity: Decimal
+    materials: List[MaterialPreviewLine] = Field(default_factory=list)
 
 
 class BatchPaginatedResponse(BaseModel):

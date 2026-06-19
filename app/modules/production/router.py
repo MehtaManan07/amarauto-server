@@ -4,6 +4,7 @@ Advance/consume (14b) and rejects (14c) add more endpoints here.
 """
 
 from typing import Optional
+from decimal import Decimal
 from fastapi import APIRouter, Depends, Query
 
 from app.core.response_interceptor import skip_interceptor
@@ -12,8 +13,10 @@ from .service import BatchService
 from .schemas import (
     BatchCreateDto,
     BatchUpdateDto,
+    BatchAdvanceDto,
     BatchDetailResponse,
     BatchPaginatedResponse,
+    MaterialPreviewResponse,
 )
 
 router = APIRouter(prefix="/batches", tags=["batches"])
@@ -54,6 +57,28 @@ async def get_batch(
 ):
     """Get a batch with its full per-stage WIP breakdown."""
     return await BatchService.find_one(batch_id)
+
+
+@router.post("/{batch_id}/advance", response_model=BatchDetailResponse)
+async def advance_batch(
+    batch_id: int,
+    dto: BatchAdvanceDto,
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Move units to the next stage. Consumes that stage's BOM (warn-and-allow on negative
+    stock). `consumption` + `warnings` in the response describe what was deducted."""
+    return await BatchService.advance(batch_id, dto, user_id=current_user.user_id)
+
+
+@router.get("/{batch_id}/material-preview", response_model=MaterialPreviewResponse)
+async def material_preview(
+    batch_id: int,
+    stage_id: int = Query(..., gt=0, description="Stage to move into"),
+    quantity: Decimal = Query(..., gt=0, description="Units to move"),
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Preview what moving `quantity` units into `stage_id` would consume (no writes)."""
+    return await BatchService.material_preview(batch_id, stage_id, quantity)
 
 
 @router.patch("/{batch_id}", response_model=BatchDetailResponse)
