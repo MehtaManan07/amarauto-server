@@ -201,14 +201,16 @@ class BOMService:
         return await run_db(_find)
 
     @staticmethod
-    async def get_variants(product_id: int) -> List[BOMVariantResponse]:
-        """Distinct style x colour combos a product has a BOM for (variant picker)."""
+    async def get_variants(product_id: Optional[int] = None) -> List[BOMVariantResponse]:
+        """Distinct style x colour combos. For one product when product_id is given,
+        otherwise GLOBAL (every colour used across all BOMs) — so the colour filter works
+        without first picking a product."""
         def _get(db: Session) -> List[BOMVariantResponse]:
+            q = select(BOMLine.style, BOMLine.colour).where(BOMLine.deleted_at.is_(None))
+            if product_id is not None:
+                q = q.where(BOMLine.product_id == product_id)
             rows = db.execute(
-                select(BOMLine.style, BOMLine.colour)
-                .where(BOMLine.product_id == product_id, BOMLine.deleted_at.is_(None))
-                .distinct()
-                .order_by(BOMLine.style, BOMLine.colour)
+                q.distinct().order_by(BOMLine.style, BOMLine.colour)
             ).all()
             return [BOMVariantResponse(style=s, colour=c) for (s, c) in rows]
 

@@ -57,10 +57,10 @@ async def list_bom_lines(
 
 @router.get("/variants", response_model=List[BOMVariantResponse])
 async def get_bom_variants(
-    product_id: int = Query(..., gt=0, description="Product to get style/colour variants for"),
+    product_id: Optional[int] = Query(None, gt=0, description="Product to scope variants to; omit for all colours"),
     current_user: TokenData = Depends(require_any_role),
 ):
-    """Distinct style x colour combos a product has a BOM for."""
+    """Distinct style x colour combos — for one product, or global when product_id is omitted."""
     return await BOMService.get_variants(product_id)
 
 
