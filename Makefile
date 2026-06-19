@@ -4,9 +4,18 @@ PORT=8002
 ALEMBIC=alembic
 ALEMBIC_CONFIG=alembic.ini
 
-# Run FastAPI server
+# Run FastAPI server (against Turso)
 run:
 	uvicorn $(APP_MODULE) --host $(HOST) --port $(PORT) --reload
+
+# Run against a local SQLite copy (fast offline dev — no Turso round-trips).
+# First sync the copy:  make sync-local   (or python -m scripts.sync_local_db)
+run-local:
+	USE_LOCAL_DB=1 uvicorn $(APP_MODULE) --host $(HOST) --port $(PORT) --reload
+
+# Pull a fresh local copy of the Turso DB
+sync-local:
+	python -m scripts.sync_local_db
 
 # Alembic commands
 migrate:
