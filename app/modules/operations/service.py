@@ -8,7 +8,7 @@ worklog resolution key); product_id and stage_id FKs are validated on write.
 """
 
 from typing import Optional
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, func
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -98,6 +98,18 @@ class OperationService:
             stage = _require_stage(db, dto.stage_id) if dto.stage_id is not None else None
             _guard_unique_code(db, dto.code)
 
+            # Auto-append: if no sequence given, place the op after the product's existing
+            # ones (kept meaningful without anyone managing it). Unmapped ops stay null.
+            sequence = dto.sequence
+            if sequence is None and dto.product_id is not None:
+                max_seq = db.execute(
+                    select(func.max(Operation.sequence)).where(
+                        Operation.product_id == dto.product_id,
+                        Operation.deleted_at.is_(None),
+                    )
+                ).scalar()
+                sequence = (max_seq or 0) + 1
+
             now = datetime.utcnow()
             row = Operation(
                 product_id=dto.product_id,
@@ -105,7 +117,7 @@ class OperationService:
                 code=dto.code,
                 name=normalize_unicode(dto.name) or dto.name,
                 rate=dto.rate,
-                sequence=dto.sequence,
+                sequence=sequence,
                 component=normalize_unicode(dto.component) if dto.component else dto.component,
                 side=dto.side,
                 product_hint=normalize_unicode(dto.product_hint) if dto.product_hint else dto.product_hint,
