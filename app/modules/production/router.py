@@ -18,6 +18,7 @@ from .schemas import (
     BatchDetailResponse,
     BatchPaginatedResponse,
     MaterialPreviewResponse,
+    BatchHistoryResponse,
 )
 
 router = APIRouter(prefix="/batches", tags=["batches"])
@@ -79,6 +80,15 @@ async def reject_batch(
 ):
     """Record scrap of N units at a stage. Shrinks that stage's WIP; does not refund materials."""
     return await BatchService.reject(batch_id, dto, user_id=current_user.user_id)
+
+
+@router.get("/{batch_id}/history", response_model=BatchHistoryResponse)
+async def batch_history(
+    batch_id: int,
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Full audit trail for a batch — movements, material consumption, and rejects."""
+    return await BatchService.history(batch_id)
 
 
 @router.get("/{batch_id}/material-preview", response_model=MaterialPreviewResponse)

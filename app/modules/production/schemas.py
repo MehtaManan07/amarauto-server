@@ -93,6 +93,34 @@ class BatchAdvanceDto(BaseModel):
     to_stage_id: Optional[int] = Field(None, gt=0, description="Defaults to the next recipe stage by sequence")
 
 
+class MovementHistoryLine(BaseModel):
+    from_stage_name: Optional[str] = None
+    to_stage_name: Optional[str] = None
+    quantity: Decimal
+    moved_at: datetime
+
+
+class ConsumptionHistoryLine(BaseModel):
+    stage_name: Optional[str] = None
+    raw_material_name: Optional[str] = None
+    qty_consumed: Decimal
+    new_qty: Optional[Decimal] = None
+    created_at: datetime
+
+
+class RejectHistoryLine(BaseModel):
+    stage_name: Optional[str] = None
+    quantity: Decimal
+    reason: Optional[str] = None
+    created_at: datetime
+
+
+class BatchHistoryResponse(BaseModel):
+    movements: List[MovementHistoryLine] = Field(default_factory=list)
+    consumption: List[ConsumptionHistoryLine] = Field(default_factory=list)
+    rejects: List[RejectHistoryLine] = Field(default_factory=list)
+
+
 class BatchRejectDto(BaseModel):
     """Record scrap of `quantity` units at a stage — shrinks that stage's WIP."""
     quantity: Decimal = Field(..., gt=0)

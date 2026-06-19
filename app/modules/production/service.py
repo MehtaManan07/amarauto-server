@@ -12,7 +12,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
 
 from sqlalchemy import select, func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.db.engine import run_db
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
@@ -456,6 +456,58 @@ class BatchService:
             return _detail(db, batch, product, stages)
 
         return await run_db(_reject)
+
+    @staticmethod
+    async def history(batch_id: int):
+        from .schemas import (
+            BatchHistoryResponse, MovementHistoryLine, ConsumptionHistoryLine, RejectHistoryLine,
+        )
+
+        def _hist(db: Session) -> "BatchHistoryResponse":
+            if not db.execute(
+                select(Batch.id).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
+            ).first():
+                raise NotFoundError("Batch", batch_id)
+
+            FromStage, ToStage = aliased(Stage), aliased(Stage)
+            mv = db.execute(
+                select(BatchMovement, FromStage.name, ToStage.name)
+                .outerjoin(FromStage, BatchMovement.from_stage_id == FromStage.id)
+                .outerjoin(ToStage, BatchMovement.to_stage_id == ToStage.id)
+                .where(BatchMovement.batch_id == batch_id, BatchMovement.deleted_at.is_(None))
+                .order_by(BatchMovement.moved_at, BatchMovement.id)
+            ).all()
+            movements = [
+                MovementHistoryLine(from_stage_name=fn, to_stage_name=tn, quantity=m.quantity, moved_at=m.moved_at)
+                for (m, fn, tn) in mv
+            ]
+
+            cons = db.execute(
+                select(MaterialConsumption, Stage.name, RawMaterial.name)
+                .outerjoin(Stage, MaterialConsumption.stage_id == Stage.id)
+                .join(RawMaterial, MaterialConsumption.raw_material_id == RawMaterial.id)
+                .where(MaterialConsumption.batch_id == batch_id, MaterialConsumption.deleted_at.is_(None))
+                .order_by(MaterialConsumption.created_at, MaterialConsumption.id)
+            ).all()
+            consumption = [
+                ConsumptionHistoryLine(stage_name=sn, raw_material_name=rn, qty_consumed=c.qty_consumed,
+                                       new_qty=c.new_qty, created_at=c.created_at)
+                for (c, sn, rn) in cons
+            ]
+
+            rj = db.execute(
+                select(BatchReject, Stage.name)
+                .outerjoin(Stage, BatchReject.stage_id == Stage.id)
+                .where(BatchReject.batch_id == batch_id, BatchReject.deleted_at.is_(None))
+                .order_by(BatchReject.created_at, BatchReject.id)
+            ).all()
+            rejects = [
+                RejectHistoryLine(stage_name=sn, quantity=r.quantity, reason=r.reason, created_at=r.created_at)
+                for (r, sn) in rj
+            ]
+            return BatchHistoryResponse(movements=movements, consumption=consumption, rejects=rejects)
+
+        return await run_db(_hist)
 
     @staticmethod
     async def material_preview(batch_id: int, stage_id: int, quantity: Decimal):
