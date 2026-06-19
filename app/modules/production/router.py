@@ -1,60 +1,77 @@
-"""Production router - stage completion and WIP inventory."""
+"""
+Batches router (production execution). 14a: CRUD + per-stage WIP.
+Advance/consume (14b) and rejects (14c) add more endpoints here.
+"""
 
-from typing import List, Optional
+from typing import Optional
 from fastapi import APIRouter, Depends, Query
-from decimal import Decimal
 
+from app.core.response_interceptor import skip_interceptor
 from app.modules.users.auth import TokenData, require_any_role
-from .service import ProductionService
+from .service import BatchService
 from .schemas import (
-    StageCompletionDto,
-    StageCompletionResponse,
-    StageInventoryResponse,
-    MaterialsPreviewResponse,
+    BatchCreateDto,
+    BatchUpdateDto,
+    BatchDetailResponse,
+    BatchPaginatedResponse,
 )
 
-router = APIRouter(prefix="/production", tags=["production"])
+router = APIRouter(prefix="/batches", tags=["batches"])
 
 
-@router.post("/complete-stage", response_model=StageCompletionResponse)
-async def complete_stage(
-    dto: StageCompletionDto,
+@router.post("", response_model=BatchDetailResponse)
+async def create_batch(
+    dto: BatchCreateDto,
     current_user: TokenData = Depends(require_any_role),
 ):
-    """Complete a production stage: deduct materials, move quantity to stage."""
-    return await ProductionService.complete_stage(
-        dto,
-        user_id=current_user.user_id,
-    )
+    """Create a batch: records an intake movement of `quantity` units into the first stage."""
+    return await BatchService.create(dto, user_id=current_user.user_id)
 
 
-@router.get("/stage-inventory", response_model=List[StageInventoryResponse])
-async def get_stage_inventory(
-    product_id: Optional[int] = Query(None, description="Filter by product"),
-    variant: Optional[str] = Query(None, description="Filter by variant"),
-    stage_number: Optional[int] = Query(None, ge=1, description="Filter by stage"),
+@router.get("", response_model=BatchPaginatedResponse)
+async def list_batches(
+    search: Optional[str] = Query(None, description="Search batch_no, style, colour, product (words AND'd)"),
+    product_id: Optional[int] = Query(None, gt=0, description="Filter by product"),
+    status: Optional[str] = Query(None, description="Filter by status (open/in_progress/done/cancelled)"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(25, ge=1, le=1000, description="Items per page (max 1000)"),
     current_user: TokenData = Depends(require_any_role),
 ):
-    """Get WIP quantities at each stage."""
-    return await ProductionService.get_stage_inventory(
+    """List batches with pagination. Each row includes its derived current stage."""
+    return await BatchService.find_all_paginated(
+        page=page,
+        page_size=page_size,
+        search=search,
         product_id=product_id,
-        variant=variant,
-        stage_number=stage_number,
+        status=status,
     )
 
 
-@router.get("/materials-preview", response_model=MaterialsPreviewResponse)
-async def get_materials_preview(
-    product_id: int = Query(..., description="Product ID"),
-    variant: Optional[str] = Query(None, description="Variant"),
-    stage_number: int = Query(..., ge=1, description="Stage number"),
-    quantity: Decimal = Query(..., gt=0, description="Quantity to complete"),
+@router.get("/{batch_id}", response_model=BatchDetailResponse)
+async def get_batch(
+    batch_id: int,
     current_user: TokenData = Depends(require_any_role),
 ):
-    """Preview materials needed before completing a stage."""
-    return await ProductionService.get_materials_preview(
-        product_id=product_id,
-        variant=variant,
-        stage_number=stage_number,
-        quantity=quantity,
-    )
+    """Get a batch with its full per-stage WIP breakdown."""
+    return await BatchService.find_one(batch_id)
+
+
+@router.patch("/{batch_id}", response_model=BatchDetailResponse)
+async def update_batch(
+    batch_id: int,
+    dto: BatchUpdateDto,
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Light edits (style/colour/status). Quantities move via advance/reject, not here."""
+    return await BatchService.update(batch_id, dto)
+
+
+@router.delete("/{batch_id}")
+@skip_interceptor
+async def delete_batch(
+    batch_id: int,
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Soft delete a batch."""
+    await BatchService.remove(batch_id)
+    return {"message": "Batch deleted successfully"}

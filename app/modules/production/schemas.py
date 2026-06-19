@@ -1,71 +1,84 @@
 """
-Production schemas - stage completion and inventory responses.
+Batch (production execution) DTOs.
+
+A batch is a tracked lot of one product/variant flowing through the stages. WIP is DERIVED
+from the immutable ledgers, never stored:  waiting(stage) = moved_in - moved_out - rejected.
+
+14a scope: batch create (+ intake movement), list/get, per-stage WIP. Advance/consume (14b)
+and rejects (14c) come next.
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
 
 
-class StageCompletionDto(BaseModel):
-    """Request to complete a production stage."""
+class BatchCreateDto(BaseModel):
+    product_id: int = Field(..., gt=0)
+    quantity: Decimal = Field(..., gt=0)
+    style: Optional[str] = Field(None, max_length=100)
+    colour: Optional[str] = Field(None, max_length=100)
+    # Omit batch_no to auto-generate (B-0001...). start_stage_id defaults to the first stage.
+    batch_no: Optional[str] = Field(None, max_length=50)
+    start_stage_id: Optional[int] = Field(None, gt=0)
 
-    product_id: int
-    variant: Optional[str] = None
-    stage_number: int = Field(..., ge=1, description="Which stage completing")
-    quantity: Decimal = Field(..., gt=0, description="How many units completing")
-
-
-class MaterialDeduction(BaseModel):
-    """One material deducted during stage completion."""
-
-    raw_material_id: int
-    raw_material_name: str
-    qty_deducted: Decimal
-    remaining_stock: Decimal
+    class Config:
+        from_attributes = True
 
 
-class StageInventoryResponse(BaseModel):
-    """Stage inventory row with product info."""
+class BatchUpdateDto(BaseModel):
+    """Light edits only — quantities flow through movements/rejects, not direct edits."""
+    style: Optional[str] = Field(None, max_length=100)
+    colour: Optional[str] = Field(None, max_length=100)
+    status: Optional[str] = Field(None, max_length=20)
 
+    class Config:
+        from_attributes = True
+
+
+class BatchWipLine(BaseModel):
+    """Units currently waiting at a stage for this batch (derived from ledgers)."""
+    stage_id: int
+    stage_name: str
+    sequence: int
+    waiting: Decimal
+
+
+class BatchResponse(BaseModel):
     id: int
+    batch_no: str
     product_id: int
     product_part_no: Optional[str] = None
     product_name: Optional[str] = None
-    variant: Optional[str] = None
-    stage_number: int
+    style: Optional[str] = None
+    colour: Optional[str] = None
     quantity: Decimal
+    status: str
+    # Derived: where the units currently sit (highest-sequence stage with waiting > 0).
+    current_stage_id: Optional[int] = None
+    current_stage_name: Optional[str] = None
+    created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    deleted_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 
-class StageCompletionResponse(BaseModel):
-    """Response after completing a stage."""
-
-    stage_inventory: StageInventoryResponse
-    materials_deducted: List[MaterialDeduction] = []
+class BatchDetailResponse(BatchResponse):
+    """Batch + full per-stage WIP breakdown."""
+    wip: List[BatchWipLine] = Field(default_factory=list)
 
 
-class MaterialRequirement(BaseModel):
-    """Material needed for a stage (preview)."""
+class BatchPaginatedResponse(BaseModel):
+    items: List[BatchResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_more: bool
 
-    raw_material_id: int
-    raw_material_name: str
-    unit_type: str
-    needed_qty: Decimal
-    current_stock: Decimal
-    shortage: Decimal
-    status: str  # "ok" | "low"
-
-
-class MaterialsPreviewResponse(BaseModel):
-    """Preview of materials needed for stage completion."""
-
-    product_part_no: str
-    product_name: str
-    variant: Optional[str] = None
-    stage_number: int
-    quantity: Decimal
-    materials: List[MaterialRequirement]
-    previous_stage_qty: Optional[Decimal] = None  # If stage > 1
+    class Config:
+        from_attributes = True

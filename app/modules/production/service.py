@@ -1,351 +1,319 @@
 """
-Production service - complete stages with automatic material deduction.
+Batch (production execution) service — 14a: create, list, get, WIP.
+
+WIP is derived from the immutable ledgers, never stored:
+    waiting(batch, stage) = moved_in - moved_out - rejected
+Creating a batch records an intake movement (from_stage NULL -> first stage); all units start
+there waiting. Advance/consume (14b) and rejects (14c) extend this.
 """
 
-from datetime import datetime
-from typing import List, Optional
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from typing import Dict, List, Optional
 from decimal import Decimal
+from datetime import datetime
+
+from sqlalchemy import select, func, or_
+from sqlalchemy.orm import Session
 
 from app.core.db.engine import run_db
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+from app.core.pagination import paginate_multi, build_paginated_response
+from app.core.utils import search_words, normalize_unicode
 from app.modules.products.models import Product
-from app.modules.raw_materials.models import RawMaterial
-from app.modules.inventory_logs.models import InventoryLog, LogType
-from app.modules.bom.models import BOMLine
-from .models import StageInventory
-from .schemas import (
-    StageCompletionDto,
-    StageCompletionResponse,
-    StageInventoryResponse,
-    MaterialDeduction,
-    MaterialsPreviewResponse,
-    MaterialRequirement,
-)
+from app.modules.stages.models import Stage
+from .models import Batch, BatchMovement, BatchReject, BATCH_OPEN
+
+ZERO = Decimal("0")
 
 
-def _to_stage_inv_response(
-    row: StageInventory,
-    product_part_no: Optional[str] = None,
-    product_name: Optional[str] = None,
-) -> StageInventoryResponse:
-    return StageInventoryResponse(
-        id=row.id,
-        product_id=row.product_id,
-        product_part_no=product_part_no,
-        product_name=product_name,
-        variant=row.variant,
-        stage_number=row.stage_number,
-        quantity=row.quantity,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
+# ----------------------------- WIP derivation -----------------------------
+
+def _active_stages(db: Session) -> List[Stage]:
+    return list(db.execute(
+        select(Stage).where(Stage.deleted_at.is_(None)).order_by(Stage.sequence)
+    ).scalars().all())
+
+
+def _wip_by_stage(db: Session, batch_id: int) -> Dict[int, Decimal]:
+    """{stage_id: waiting} for one batch, from the ledgers."""
+    moved_in = dict(db.execute(
+        select(BatchMovement.to_stage_id, func.sum(BatchMovement.quantity))
+        .where(BatchMovement.batch_id == batch_id, BatchMovement.deleted_at.is_(None))
+        .group_by(BatchMovement.to_stage_id)
+    ).all())
+    moved_out = dict(db.execute(
+        select(BatchMovement.from_stage_id, func.sum(BatchMovement.quantity))
+        .where(BatchMovement.batch_id == batch_id, BatchMovement.deleted_at.is_(None),
+               BatchMovement.from_stage_id.isnot(None))
+        .group_by(BatchMovement.from_stage_id)
+    ).all())
+    rejected = dict(db.execute(
+        select(BatchReject.stage_id, func.sum(BatchReject.quantity))
+        .where(BatchReject.batch_id == batch_id, BatchReject.deleted_at.is_(None))
+        .group_by(BatchReject.stage_id)
+    ).all())
+    stage_ids = set(moved_in) | set(moved_out) | set(rejected)
+    return {
+        sid: (moved_in.get(sid) or ZERO) - (moved_out.get(sid) or ZERO) - (rejected.get(sid) or ZERO)
+        for sid in stage_ids
+    }
+
+
+def _current_stage(wip: Dict[int, Decimal], stages: List[Stage]) -> Optional[Stage]:
+    """Highest-sequence stage with waiting > 0 (where the units currently sit)."""
+    for s in sorted(stages, key=lambda x: x.sequence, reverse=True):
+        if (wip.get(s.id) or ZERO) > 0:
+            return s
+    return None
+
+
+def _bulk_current_stage(
+    db: Session, batch_ids: List[int], stages: List[Stage]
+) -> Dict[int, Optional[Stage]]:
+    """{batch_id: current Stage or None} for a page of batches, in 3 grouped queries."""
+    if not batch_ids:
+        return {}
+
+    waiting: Dict[int, Dict[int, Decimal]] = {bid: {} for bid in batch_ids}
+
+    def grouped(col, table, extra=None):
+        q = (
+            select(table.batch_id, col, func.sum(table.quantity))
+            .where(table.batch_id.in_(batch_ids), table.deleted_at.is_(None))
+        )
+        if extra is not None:
+            q = q.where(extra)
+        return db.execute(q.group_by(table.batch_id, col)).all()
+
+    for bid, sid, qty in grouped(BatchMovement.to_stage_id, BatchMovement):
+        waiting[bid][sid] = waiting[bid].get(sid, ZERO) + (qty or ZERO)
+    for bid, sid, qty in grouped(BatchMovement.from_stage_id, BatchMovement,
+                                 BatchMovement.from_stage_id.isnot(None)):
+        waiting[bid][sid] = waiting[bid].get(sid, ZERO) - (qty or ZERO)
+    for bid, sid, qty in grouped(BatchReject.stage_id, BatchReject):
+        waiting[bid][sid] = waiting[bid].get(sid, ZERO) - (qty or ZERO)
+
+    out: Dict[int, Optional[Stage]] = {}
+    for bid in batch_ids:
+        cur = None
+        for s in sorted(stages, key=lambda x: x.sequence, reverse=True):
+            if waiting[bid].get(s.id, ZERO) > 0:
+                cur = s
+                break
+        out[bid] = cur
+    return out
+
+
+# ----------------------------- response shaping -----------------------------
+
+class _ProductLite:
+    """Tiny adapter so _to_response can read part_no/name uniformly."""
+    def __init__(self, part_no, name):
+        self.part_no, self.name = part_no, name
+
+
+def _to_response(batch: Batch, product, current: Optional[Stage]):
+    from .schemas import BatchResponse
+    return BatchResponse(
+        id=batch.id,
+        batch_no=batch.batch_no,
+        product_id=batch.product_id,
+        product_part_no=product.part_no if product else None,
+        product_name=product.name if product else None,
+        style=batch.style,
+        colour=batch.colour,
+        quantity=batch.quantity,
+        status=batch.status,
+        current_stage_id=current.id if current else None,
+        current_stage_name=current.name if current else None,
+        created_by=batch.created_by,
+        created_at=batch.created_at,
+        updated_at=batch.updated_at,
+        deleted_at=batch.deleted_at,
     )
 
 
-class ProductionService:
+def _detail(db: Session, batch: Batch, product, stages: List[Stage]):
+    """Build a BatchDetailResponse (batch + full per-stage WIP)."""
+    from .schemas import BatchDetailResponse, BatchWipLine
+
+    wip = _wip_by_stage(db, batch.id)
+    cur = _current_stage(wip, stages)
+    base = _to_response(batch, product, cur)
+    lines = [
+        BatchWipLine(stage_id=s.id, stage_name=s.name, sequence=s.sequence,
+                     waiting=(wip.get(s.id) or ZERO))
+        for s in stages
+    ]
+    return BatchDetailResponse(**base.model_dump(), wip=lines)
+
+
+# ----------------------------- helpers -----------------------------
+
+def _require_product(db: Session, product_id: int) -> Product:
+    product = db.execute(
+        select(Product).where(Product.id == product_id, Product.deleted_at.is_(None))
+    ).scalar_one_or_none()
+    if not product:
+        raise ValidationError(f"Product {product_id} does not exist")
+    return product
+
+
+def _next_batch_no(db: Session) -> str:
+    rows = db.execute(
+        select(Batch.batch_no).where(Batch.batch_no.like("B-%"))
+    ).scalars().all()
+    max_n = 0
+    for bn in rows:
+        suffix = bn.rsplit("-", 1)[-1]
+        if suffix.isdigit():
+            max_n = max(max_n, int(suffix))
+    return f"B-{max_n + 1:04d}"
+
+
+class BatchService:
     @staticmethod
-    async def complete_stage(
-        dto: StageCompletionDto,
-        user_id: Optional[int] = None,
-    ) -> StageCompletionResponse:
-        """
-        Complete a production stage: deduct materials, deduct from previous stage if any,
-        add to current stage inventory.
-        """
+    async def create(dto, user_id: Optional[int] = None):
+        def _create(db: Session):
+            product = _require_product(db, dto.product_id)
 
-        def _complete(db: Session) -> StageCompletionResponse:
-            # 1. Validate product exists
-            product = db.execute(
-                select(Product).where(
-                    Product.id == dto.product_id,
-                    Product.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
-            if not product:
-                raise NotFoundError("Product", dto.product_id)
-
-            # 2. Fetch BOM lines for this product/variant/stage
-            bom_query = (
-                select(BOMLine, RawMaterial)
-                .join(RawMaterial, BOMLine.raw_material_id == RawMaterial.id)
-                .where(
-                    BOMLine.product_id == dto.product_id,
-                    BOMLine.stage_number == dto.stage_number,
-                    BOMLine.deleted_at.is_(None),
-                    RawMaterial.deleted_at.is_(None),
-                )
-            )
-            if dto.variant:
-                bom_query = bom_query.where(BOMLine.variant == dto.variant)
+            stages = _active_stages(db)
+            if not stages:
+                raise ValidationError("No stages configured")
+            if dto.start_stage_id is not None:
+                start = next((s for s in stages if s.id == dto.start_stage_id), None)
+                if start is None:
+                    raise ValidationError(f"Stage {dto.start_stage_id} does not exist")
             else:
-                bom_query = bom_query.where(BOMLine.variant.is_(None))
-            bom_result = db.execute(bom_query)
-            bom_rows = bom_result.all()
+                start = stages[0]  # lowest sequence
 
-            # 3. If stage > 1, check previous stage has enough
-            prev_stage_row = None
-            if dto.stage_number > 1:
-                prev_stage_query = (
-                    select(StageInventory)
-                    .where(
-                        StageInventory.product_id == dto.product_id,
-                        StageInventory.stage_number == dto.stage_number - 1,
-                        StageInventory.deleted_at.is_(None),
-                    )
-                )
-                if dto.variant:
-                    prev_stage_query = prev_stage_query.where(
-                        StageInventory.variant == dto.variant
-                    )
-                else:
-                    prev_stage_query = prev_stage_query.where(
-                        StageInventory.variant.is_(None)
-                    )
-                prev_stage_row = db.execute(prev_stage_query).scalar_one_or_none()
-                prev_qty = (prev_stage_row.quantity if prev_stage_row else Decimal("0")) or Decimal(
-                    "0"
-                )
-                if prev_qty < dto.quantity:
-                    raise ConflictError(
-                        f"Stage {dto.stage_number - 1} has only {prev_qty} units, "
-                        f"need {dto.quantity} for stage {dto.stage_number}"
-                    )
+            batch_no = dto.batch_no.strip() if dto.batch_no else _next_batch_no(db)
+            clash = db.execute(
+                select(Batch.id).where(Batch.batch_no == batch_no, Batch.deleted_at.is_(None))
+            ).first()
+            if clash:
+                raise ConflictError(f"Batch {batch_no} already exists")
 
-            # 4. Aggregate BOM by raw_material_id and check stock
-            by_rm: dict[int, tuple[Decimal, RawMaterial]] = {}
-            for line, raw in bom_rows:
-                needed = (line.raw_qty / line.batch_qty) * dto.quantity
-                if raw.id in by_rm:
-                    prev_needed, _ = by_rm[raw.id]
-                    by_rm[raw.id] = (prev_needed + needed, raw)
-                else:
-                    by_rm[raw.id] = (needed, raw)
-
-            for raw_id, (needed, raw) in by_rm.items():
-                current = raw.stock_qty or Decimal("0")
-                if current < needed:
-                    raise ConflictError(
-                        f"Insufficient stock for {raw.name}: need {needed}, have {current}"
-                    )
-
-            # 5. Deduct materials and create inventory logs
             now = datetime.utcnow()
-            materials_deducted: List[MaterialDeduction] = []
-            for raw_id, (needed, raw) in by_rm.items():
-                prev_qty = raw.stock_qty or Decimal("0")
-                new_qty = prev_qty - needed
-                raw.stock_qty = new_qty
-                raw.updated_at = now
-                log = InventoryLog(
-                    raw_material_id=raw_id,
-                    user_id=user_id,
-                    type=LogType.REMOVE.value,
-                    quantity_delta=-needed,
-                    previous_qty=prev_qty,
-                    new_qty=new_qty,
-                    notes=f"Stage {dto.stage_number} completion for product {product.part_no}",
-                    created_at=now,
-                    updated_at=now,
-                )
-                db.add(log)
-                materials_deducted.append(
-                    MaterialDeduction(
-                        raw_material_id=raw_id,
-                        raw_material_name=raw.name,
-                        qty_deducted=needed,
-                        remaining_stock=new_qty,
-                    )
-                )
-
-            # 6. If stage > 1, deduct from previous stage (reuse row fetched in step 3)
-            if dto.stage_number > 1 and prev_stage_row:
-                prev_stage_row.quantity = (prev_stage_row.quantity or Decimal("0")) - dto.quantity
-                if prev_stage_row.quantity <= 0:
-                    db.delete(prev_stage_row)
-                else:
-                    prev_stage_row.updated_at = now
-
-            # 7. Add/update current stage inventory
-            curr_query = (
-                select(StageInventory)
-                .where(
-                    StageInventory.product_id == dto.product_id,
-                    StageInventory.stage_number == dto.stage_number,
-                    StageInventory.deleted_at.is_(None),
-                )
+            batch = Batch(
+                batch_no=batch_no,
+                product_id=dto.product_id,
+                style=normalize_unicode(dto.style) if dto.style else dto.style,
+                colour=normalize_unicode(dto.colour) if dto.colour else dto.colour,
+                quantity=dto.quantity,
+                status=BATCH_OPEN,
+                created_by=user_id,
+                created_at=now,
+                updated_at=now,
             )
-            if dto.variant:
-                curr_query = curr_query.where(StageInventory.variant == dto.variant)
-            else:
-                curr_query = curr_query.where(StageInventory.variant.is_(None))
-            curr_row = db.execute(curr_query).scalar_one_or_none()
-            if curr_row:
-                curr_row.quantity = (curr_row.quantity or Decimal("0")) + dto.quantity
-                curr_row.updated_at = now
-                db.flush()
-                stage_inv = _to_stage_inv_response(
-                    curr_row,
-                    product_part_no=product.part_no,
-                    product_name=product.name,
-                )
-            else:
-                new_inv = StageInventory(
-                    product_id=dto.product_id,
-                    variant=dto.variant,
-                    stage_number=dto.stage_number,
-                    quantity=dto.quantity,
-                    created_at=now,
-                    updated_at=now,
-                )
-                db.add(new_inv)
-                db.flush()
-                stage_inv = _to_stage_inv_response(
-                    new_inv,
-                    product_part_no=product.part_no,
-                    product_name=product.name,
-                )
+            db.add(batch)
+            db.flush()
 
-            return StageCompletionResponse(
-                stage_inventory=stage_inv,
-                materials_deducted=materials_deducted,
-            )
+            # Intake: all units enter the flow at the first stage (from_stage NULL).
+            db.add(BatchMovement(
+                batch_id=batch.id,
+                from_stage_id=None,
+                to_stage_id=start.id,
+                quantity=dto.quantity,
+                moved_by=user_id,
+                created_at=now,
+                updated_at=now,
+            ))
+            db.flush()
 
-        return await run_db(_complete)
+            return _detail(db, batch, product, stages)
+
+        return await run_db(_create)
 
     @staticmethod
-    async def get_stage_inventory(
+    async def find_all_paginated(
+        page: int = 1,
+        page_size: int = 25,
+        search: Optional[str] = None,
         product_id: Optional[int] = None,
-        variant: Optional[str] = None,
-        stage_number: Optional[int] = None,
-    ) -> List[StageInventoryResponse]:
-        """Get WIP at each stage, optionally filtered."""
+        status: Optional[str] = None,
+    ) -> dict:
+        words = search_words(search)
 
-        def _get(db: Session) -> List[StageInventoryResponse]:
+        def _find(db: Session) -> dict:
             query = (
-                select(StageInventory, Product.part_no, Product.name)
-                .join(Product, StageInventory.product_id == Product.id)
-                .where(
-                    StageInventory.deleted_at.is_(None),
-                    Product.deleted_at.is_(None),
-                )
+                select(Batch, Product.part_no, Product.name)
+                .join(Product, Batch.product_id == Product.id)
+                .where(Batch.deleted_at.is_(None))
             )
             if product_id is not None:
-                query = query.where(StageInventory.product_id == product_id)
-            if variant is not None:
-                query = query.where(StageInventory.variant == variant)
-            if stage_number is not None:
-                query = query.where(StageInventory.stage_number == stage_number)
-            query = query.order_by(
-                StageInventory.product_id,
-                StageInventory.variant,
-                StageInventory.stage_number,
-            )
-            result = db.execute(query)
-            rows = result.all()
-            return [
-                _to_stage_inv_response(
-                    row,
-                    product_part_no=part_no,
-                    product_name=prod_name,
-                )
-                for row, part_no, prod_name in rows
-            ]
+                query = query.where(Batch.product_id == product_id)
+            if status is not None:
+                query = query.where(Batch.status == status)
+            for word in words:
+                pattern = f"%{word}%"
+                query = query.where(or_(
+                    Batch.batch_no.ilike(pattern),
+                    Batch.style.ilike(pattern),
+                    Batch.colour.ilike(pattern),
+                    Product.part_no.ilike(pattern),
+                    Product.name.ilike(pattern),
+                ))
+            query = query.order_by(Batch.created_at.desc(), Batch.id.desc())
 
-        return await run_db(_get)
+            rows, total = paginate_multi(db, query, page, page_size)
+            stages = _active_stages(db)
+            batch_ids = [b.id for (b, _pn, _nm) in rows]
+            current = _bulk_current_stage(db, batch_ids, stages)
+
+            items = [
+                _to_response(b, _ProductLite(pn, nm), current.get(b.id))
+                for (b, pn, nm) in rows
+            ]
+            return build_paginated_response(items, total, page, page_size)
+
+        return await run_db(_find)
 
     @staticmethod
-    async def get_materials_preview(
-        product_id: int,
-        variant: Optional[str],
-        stage_number: int,
-        quantity: Decimal,
-    ) -> MaterialsPreviewResponse:
-        """Preview materials needed for completing a stage."""
-
-        def _preview(db: Session) -> MaterialsPreviewResponse:
-            product = db.execute(
-                select(Product).where(
-                    Product.id == product_id,
-                    Product.deleted_at.is_(None),
-                )
+    async def find_one(batch_id: int):
+        def _find(db: Session):
+            batch = db.execute(
+                select(Batch).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
             ).scalar_one_or_none()
-            if not product:
-                raise NotFoundError("Product", product_id)
+            if not batch:
+                raise NotFoundError("Batch", batch_id)
+            product = db.execute(
+                select(Product).where(Product.id == batch.product_id)
+            ).scalar_one_or_none()
+            return _detail(db, batch, product, _active_stages(db))
 
-            bom_query = (
-                select(BOMLine, RawMaterial)
-                .join(RawMaterial, BOMLine.raw_material_id == RawMaterial.id)
-                .where(
-                    BOMLine.product_id == product_id,
-                    BOMLine.stage_number == stage_number,
-                    BOMLine.deleted_at.is_(None),
-                    RawMaterial.deleted_at.is_(None),
-                )
-            )
-            if variant:
-                bom_query = bom_query.where(BOMLine.variant == variant)
-            else:
-                bom_query = bom_query.where(BOMLine.variant.is_(None))
-            bom_rows = db.execute(bom_query).all()
+        return await run_db(_find)
 
-            by_rm: dict[int, tuple[Decimal, RawMaterial]] = {}
-            for line, raw in bom_rows:
-                needed = (line.raw_qty / line.batch_qty) * quantity
-                if raw.id in by_rm:
-                    prev, _ = by_rm[raw.id]
-                    by_rm[raw.id] = (prev + needed, raw)
-                else:
-                    by_rm[raw.id] = (needed, raw)
+    @staticmethod
+    async def update(batch_id: int, dto):
+        def _update(db: Session):
+            batch = db.execute(
+                select(Batch).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
+            ).scalar_one_or_none()
+            if not batch:
+                raise NotFoundError("Batch", batch_id)
+            data = dto.model_dump(exclude_unset=True)
+            for k, v in data.items():
+                if k in ("style", "colour") and isinstance(v, str):
+                    v = normalize_unicode(v) or v
+                setattr(batch, k, v)
+            batch.updated_at = datetime.utcnow()
+            db.flush()
+            product = db.execute(
+                select(Product).where(Product.id == batch.product_id)
+            ).scalar_one_or_none()
+            return _detail(db, batch, product, _active_stages(db))
 
-            materials: List[MaterialRequirement] = []
-            for raw_id, (needed, raw) in by_rm.items():
-                current = raw.stock_qty or Decimal("0")
-                shortage = max(Decimal("0"), needed - current)
-                status = "ok" if shortage == 0 else "low"
-                materials.append(
-                    MaterialRequirement(
-                        raw_material_id=raw_id,
-                        raw_material_name=raw.name,
-                        unit_type=raw.unit_type,
-                        needed_qty=needed,
-                        current_stock=current,
-                        shortage=shortage,
-                        status=status,
-                    )
-                )
+        return await run_db(_update)
 
-            previous_stage_qty: Optional[Decimal] = None
-            if stage_number > 1:
-                prev_query = (
-                    select(StageInventory)
-                    .where(
-                        StageInventory.product_id == product_id,
-                        StageInventory.stage_number == stage_number - 1,
-                        StageInventory.deleted_at.is_(None),
-                    )
-                )
-                if variant:
-                    prev_query = prev_query.where(
-                        StageInventory.variant == variant
-                    )
-                else:
-                    prev_query = prev_query.where(
-                        StageInventory.variant.is_(None)
-                    )
-                prev_row = db.execute(prev_query).scalar_one_or_none()
-                previous_stage_qty = (
-                    prev_row.quantity if prev_row else Decimal("0")
-                ) or Decimal("0")
+    @staticmethod
+    async def remove(batch_id: int) -> None:
+        def _remove(db: Session) -> None:
+            batch = db.execute(
+                select(Batch).where(Batch.id == batch_id)
+            ).scalar_one_or_none()
+            if not batch:
+                raise NotFoundError("Batch", batch_id)
+            batch.deleted_at = datetime.utcnow()
+            db.flush()
 
-            return MaterialsPreviewResponse(
-                product_part_no=product.part_no,
-                product_name=product.name,
-                variant=variant,
-                stage_number=stage_number,
-                quantity=quantity,
-                materials=materials,
-                previous_stage_qty=previous_stage_qty,
-            )
-
-        return await run_db(_preview)
+        await run_db(_remove)
