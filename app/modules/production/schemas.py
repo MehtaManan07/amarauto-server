@@ -93,6 +93,13 @@ class BatchAdvanceDto(BaseModel):
     to_stage_id: Optional[int] = Field(None, gt=0, description="Defaults to the next recipe stage by sequence")
 
 
+class BatchRejectDto(BaseModel):
+    """Record scrap of `quantity` units at a stage — shrinks that stage's WIP."""
+    quantity: Decimal = Field(..., gt=0)
+    stage_id: Optional[int] = Field(None, gt=0, description="Defaults to the batch's current stage")
+    reason: Optional[str] = Field(None, max_length=500)
+
+
 class MaterialPreviewLine(BaseModel):
     raw_material_id: int
     raw_material_name: str

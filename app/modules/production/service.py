@@ -410,6 +410,54 @@ class BatchService:
         return await run_db(_advance)
 
     @staticmethod
+    async def reject(batch_id: int, dto, user_id: Optional[int] = None):
+        def _reject(db: Session):
+            batch = db.execute(
+                select(Batch).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
+            ).scalar_one_or_none()
+            if not batch:
+                raise NotFoundError("Batch", batch_id)
+
+            stages = _active_stages(db)
+            by_id = {s.id: s for s in stages}
+            wip = _wip_by_stage(db, batch.id)
+
+            if dto.stage_id is not None:
+                stage = by_id.get(dto.stage_id)
+                if stage is None:
+                    raise ValidationError(f"Stage {dto.stage_id} does not exist")
+            else:
+                stage = _current_stage(wip, stages)
+                if stage is None:
+                    raise ValidationError("Batch has no units to reject")
+
+            available = wip.get(stage.id) or ZERO
+            if dto.quantity > available:
+                raise ValidationError(
+                    f"Only {available} units waiting at {stage.name}, cannot reject {dto.quantity}"
+                )
+
+            now = datetime.utcnow()
+            db.add(BatchReject(
+                batch_id=batch.id,
+                stage_id=stage.id,
+                quantity=dto.quantity,
+                reason=normalize_unicode(dto.reason) if dto.reason else dto.reason,
+                created_by=user_id,
+                created_at=now,
+                updated_at=now,
+            ))
+            batch.updated_at = now
+            db.flush()
+
+            product = db.execute(
+                select(Product).where(Product.id == batch.product_id)
+            ).scalar_one_or_none()
+            return _detail(db, batch, product, stages)
+
+        return await run_db(_reject)
+
+    @staticmethod
     async def material_preview(batch_id: int, stage_id: int, quantity: Decimal):
         from .schemas import MaterialPreviewResponse, MaterialPreviewLine
 

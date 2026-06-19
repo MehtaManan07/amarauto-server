@@ -14,6 +14,7 @@ from .schemas import (
     BatchCreateDto,
     BatchUpdateDto,
     BatchAdvanceDto,
+    BatchRejectDto,
     BatchDetailResponse,
     BatchPaginatedResponse,
     MaterialPreviewResponse,
@@ -68,6 +69,16 @@ async def advance_batch(
     """Move units to the next stage. Consumes that stage's BOM (warn-and-allow on negative
     stock). `consumption` + `warnings` in the response describe what was deducted."""
     return await BatchService.advance(batch_id, dto, user_id=current_user.user_id)
+
+
+@router.post("/{batch_id}/reject", response_model=BatchDetailResponse)
+async def reject_batch(
+    batch_id: int,
+    dto: BatchRejectDto,
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Record scrap of N units at a stage. Shrinks that stage's WIP; does not refund materials."""
+    return await BatchService.reject(batch_id, dto, user_id=current_user.user_id)
 
 
 @router.get("/{batch_id}/material-preview", response_model=MaterialPreviewResponse)
