@@ -1,5 +1,7 @@
 """
-Work logs router. CRUD with pagination. Create/Update/Delete: Admin/Supervisor only.
+Work logs router (new schema). Piece-rate labor + payroll.
+Create/bulk/update/delete: Admin/Supervisor only (workers are dropdown/payroll subjects).
+Reads + payroll: any authenticated role.
 """
 
 from typing import Optional
@@ -15,6 +17,8 @@ from .schemas import (
     WorkLogBulkCreateDto,
     WorkLogResponse,
     WorkLogPaginatedResponse,
+    BulkCreateResponse,
+    PayrollResponse,
 )
 
 router = APIRouter(prefix="/work-logs", tags=["work-logs"])
@@ -25,42 +29,48 @@ async def create_work_log(
     dto: WorkLogCreateDto,
     current_user: TokenData = Depends(require_admin_or_supervisor),
 ):
-    """Add a work log (Admin/Supervisor only)."""
+    """Log one piece-rate entry. rate defaults to the operation's rate; pay = quantity * rate."""
     return await WorkLogService.create(dto)
 
 
-@router.post("/bulk", response_model=list[WorkLogResponse])
+@router.post("/bulk", response_model=BulkCreateResponse)
 async def bulk_create_work_logs(
     dto: WorkLogBulkCreateDto,
     current_user: TokenData = Depends(require_admin_or_supervisor),
 ):
-    """Bulk create work logs for a single worker and operation (Admin/Supervisor only)."""
+    """Bulk-log many entries for ONE worker in a single transaction (the worklog grid)."""
     return await WorkLogService.bulk_create(dto)
 
 
 @router.get("", response_model=WorkLogPaginatedResponse)
 async def list_work_logs(
-    user_id: Optional[int] = Query(None, description="Filter by worker"),
-    product_id: Optional[int] = Query(None, description="Filter by product"),
-    job_rate_id: Optional[int] = Query(None, description="Filter by job rate"),
-    work_date_from: Optional[date] = Query(None, description="From date"),
-    work_date_to: Optional[date] = Query(None, description="To date"),
-    search: Optional[str] = Query(None, description="Search user, product, operation (words AND'd)"),
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    page_size: int = Query(25, ge=1, le=1000, description="Items per page (max 1000)"),
+    search: Optional[str] = Query(None, description="Search worker, operation code/name, notes"),
+    worker_id: Optional[int] = Query(None, gt=0),
+    operation_id: Optional[int] = Query(None, gt=0),
+    batch_id: Optional[int] = Query(None, gt=0),
+    from_date: Optional[date] = Query(None, description="work_date >= (YYYY-MM-DD)"),
+    to_date: Optional[date] = Query(None, description="work_date <= (YYYY-MM-DD)"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=1000),
     current_user: TokenData = Depends(require_any_role),
 ):
-    """List work logs with pagination and filters."""
+    """List work logs with pagination + filters (worker / operation / batch / date range)."""
     return await WorkLogService.find_all_paginated(
-        page=page,
-        page_size=page_size,
-        user_id=user_id,
-        product_id=product_id,
-        job_rate_id=job_rate_id,
-        work_date_from=work_date_from,
-        work_date_to=work_date_to,
-        search=search,
+        page=page, page_size=page_size, search=search,
+        worker_id=worker_id, operation_id=operation_id, batch_id=batch_id,
+        from_date=from_date, to_date=to_date,
     )
+
+
+@router.get("/payroll", response_model=PayrollResponse)
+async def payroll(
+    from_date: date = Query(..., description="Period start (YYYY-MM-DD)"),
+    to_date: date = Query(..., description="Period end (YYYY-MM-DD)"),
+    worker_id: Optional[int] = Query(None, gt=0, description="Limit to one worker"),
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Payroll: sum(quantity) and sum(total_amount) per worker over the date range."""
+    return await WorkLogService.payroll(from_date=from_date, to_date=to_date, worker_id=worker_id)
 
 
 @router.get("/{log_id}", response_model=WorkLogResponse)
@@ -68,7 +78,7 @@ async def get_work_log(
     log_id: int,
     current_user: TokenData = Depends(require_any_role),
 ):
-    """Get work log by id."""
+    """Get one work log."""
     return await WorkLogService.find_one(log_id)
 
 
@@ -78,7 +88,7 @@ async def update_work_log(
     dto: WorkLogUpdateDto,
     current_user: TokenData = Depends(require_admin_or_supervisor),
 ):
-    """Update work log (Admin/Supervisor only)."""
+    """Edit a work log. Changing rate/quantity re-snapshots total_amount."""
     return await WorkLogService.update(log_id, dto)
 
 
@@ -88,6 +98,6 @@ async def delete_work_log(
     log_id: int,
     current_user: TokenData = Depends(require_admin_or_supervisor),
 ):
-    """Soft delete work log (Admin/Supervisor only)."""
+    """Soft delete a work log."""
     await WorkLogService.remove(log_id)
     return {"message": "Work log deleted successfully"}
