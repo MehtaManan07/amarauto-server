@@ -24,13 +24,13 @@ from app.modules.bom.models import BOMLine
 from app.modules.raw_materials.models import RawMaterial
 from app.modules.operations.models import Operation
 from .models import (
-    Batch, BatchMovement, BatchReject, MaterialConsumption,
+    Batch, BatchMovement, BatchReject, BatchCompletion, MaterialConsumption,
     BATCH_OPEN, BATCH_IN_PROGRESS, BATCH_DONE,
 )
 from .schemas import (
     BatchCreateDto, BatchAdvanceDto, BatchRejectDto, BatchUpdateDto,
     BatchResponse, BatchDetailResponse, BatchWipLine, ConsumptionLine,
-    BatchHistoryResponse, MovementHistoryLine, ConsumptionHistoryLine, RejectHistoryLine,
+    BatchHistoryResponse, MovementHistoryLine, ConsumptionHistoryLine, RejectHistoryLine, CompletionHistoryLine,
     MaterialPreviewResponse, MaterialPreviewLine,
     RegisterResponse, RegisterStatsResponse, RegisterJobLine,
 )
@@ -53,7 +53,7 @@ def _active_stages(db: Session) -> List[Stage]:
 
 
 def _wip_by_stage(db: Session, batch_id: int) -> Dict[int, Decimal]:
-    """{stage_id: waiting} for one batch, from the ledgers."""
+    """{stage_id: waiting} = moved_in - moved_out - rejected - completed."""
     moved_in = dict(db.execute(
         select(BatchMovement.to_stage_id, func.sum(BatchMovement.quantity))
         .where(BatchMovement.batch_id == batch_id, BatchMovement.deleted_at.is_(None))
@@ -70,9 +70,15 @@ def _wip_by_stage(db: Session, batch_id: int) -> Dict[int, Decimal]:
         .where(BatchReject.batch_id == batch_id, BatchReject.deleted_at.is_(None))
         .group_by(BatchReject.stage_id)
     ).all())
-    stage_ids = set(moved_in) | set(moved_out) | set(rejected)
+    completed = dict(db.execute(
+        select(BatchCompletion.stage_id, func.sum(BatchCompletion.quantity))
+        .where(BatchCompletion.batch_id == batch_id, BatchCompletion.deleted_at.is_(None))
+        .group_by(BatchCompletion.stage_id)
+    ).all())
+    stage_ids = set(moved_in) | set(moved_out) | set(rejected) | set(completed)
     return {
-        sid: (moved_in.get(sid) or ZERO) - (moved_out.get(sid) or ZERO) - (rejected.get(sid) or ZERO)
+        sid: (moved_in.get(sid) or ZERO) - (moved_out.get(sid) or ZERO)
+             - (rejected.get(sid) or ZERO) - (completed.get(sid) or ZERO)
         for sid in stage_ids
     }
 
@@ -107,6 +113,8 @@ def _bulk_wip(db: Session, batch_ids: List[int]) -> Dict[int, Dict[int, Decimal]
                                  BatchMovement.from_stage_id.isnot(None)):
         waiting[bid][sid] = waiting[bid].get(sid, ZERO) - (qty or ZERO)
     for bid, sid, qty in grouped(BatchReject.stage_id, BatchReject):
+        waiting[bid][sid] = waiting[bid].get(sid, ZERO) - (qty or ZERO)
+    for bid, sid, qty in grouped(BatchCompletion.stage_id, BatchCompletion):
         waiting[bid][sid] = waiting[bid].get(sid, ZERO) - (qty or ZERO)
     return waiting
 
@@ -520,7 +528,19 @@ class BatchService:
                 RejectHistoryLine(stage_name=sn, quantity=r.quantity, reason=r.reason, created_at=r.created_at)
                 for (r, sn) in rj
             ]
-            return BatchHistoryResponse(movements=movements, consumption=consumption, rejects=rejects)
+
+            cp = db.execute(
+                select(BatchCompletion, Stage.name)
+                .outerjoin(Stage, BatchCompletion.stage_id == Stage.id)
+                .where(BatchCompletion.batch_id == batch_id, BatchCompletion.deleted_at.is_(None))
+                .order_by(BatchCompletion.created_at, BatchCompletion.id)
+            ).all()
+            completions = [
+                CompletionHistoryLine(stage_name=sn, quantity=c.quantity, created_at=c.created_at)
+                for (c, sn) in cp
+            ]
+
+            return BatchHistoryResponse(movements=movements, consumption=consumption, rejects=rejects, completions=completions)
 
         return await run_db(_hist)
 
@@ -684,36 +704,46 @@ class BatchService:
             if batch.status == BATCH_DONE:
                 raise ValidationError("Batch is already completed")
 
-            # Validate: every non-zero WIP entry must be at the last stage.
-            # Units still waiting at earlier stages means the batch isn't done yet.
             stages = _active_stages(db)
             if not stages:
                 raise ValidationError("No stages configured")
             last_stage = stages[-1]
             wip = _wip_by_stage(db, batch.id)
-            stuck = [
-                sid for sid, waiting in wip.items()
-                if (waiting or ZERO) > ZERO and sid != last_stage.id
-            ]
-            if stuck:
-                stage_names = {s.id: s.name for s in stages}
-                names = ", ".join(stage_names.get(sid, f"stage {sid}") for sid in stuck)
-                raise ValidationError(
-                    f"Cannot complete: units still waiting at {names}. "
-                    f"Move them to {last_stage.name} or scrap them first."
-                )
+
+            completing_qty = wip.get(last_stage.id) or ZERO
+            if completing_qty <= ZERO:
+                raise ValidationError(f"No units waiting at {last_stage.name} to complete")
 
             now = datetime.utcnow()
-            batch.status = BATCH_DONE
-            batch.completed_at = now
-            batch.updated_at = now
+            # Record the completion as a ledger event — subtracts from final-stage WIP.
+            db.add(BatchCompletion(
+                batch_id=batch.id, stage_id=last_stage.id,
+                quantity=completing_qty, completed_by=user_id,
+                created_at=now, updated_at=now,
+            ))
             db.flush()
+
+            # Auto-transition to done when every unit is accounted for.
+            total_completed = db.execute(
+                select(func.sum(BatchCompletion.quantity))
+                .where(BatchCompletion.batch_id == batch.id, BatchCompletion.deleted_at.is_(None))
+            ).scalar() or ZERO
+            total_rejected = db.execute(
+                select(func.sum(BatchReject.quantity))
+                .where(BatchReject.batch_id == batch.id, BatchReject.deleted_at.is_(None))
+            ).scalar() or ZERO
+            if _q(total_completed + total_rejected) >= _q(batch.quantity):
+                batch.status = BATCH_DONE
+                batch.completed_at = now
+                batch.updated_at = now
+                db.flush()
+
             row = db.execute(
                 select(Batch, Product.part_no, Product.name)
                 .join(Product, Batch.product_id == Product.id)
                 .where(Batch.id == batch_id)
             ).first()
-            return _detail(db, row[0], _ProductLite(row[1], row[2]), _active_stages(db))
+            return _detail(db, row[0], _ProductLite(row[1], row[2]), stages)
 
         return await run_db(_complete)
 

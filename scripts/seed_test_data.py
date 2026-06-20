@@ -111,6 +111,8 @@ def teardown(db, verbose=True):
         db.execute(delete(MaterialConsumption).where(MaterialConsumption.batch_id.in_(batch_ids)))
         db.execute(delete(BatchMovement).where(BatchMovement.batch_id.in_(batch_ids)))
         db.execute(delete(BatchReject).where(BatchReject.batch_id.in_(batch_ids)))
+        from app.modules.production.models import BatchCompletion
+        db.execute(delete(BatchCompletion).where(BatchCompletion.batch_id.in_(batch_ids)))
         db.execute(delete(Batch).where(Batch.id.in_(batch_ids)))
     if prod_ids:
         db.execute(delete(Operation).where(Operation.product_id.in_(prod_ids)))

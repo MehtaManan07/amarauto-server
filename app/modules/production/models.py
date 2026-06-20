@@ -98,6 +98,25 @@ class BatchReject(BaseModel):
     )
 
 
+class BatchCompletion(BaseModel):
+    """Units completed out of the final stage — the terminal exit from the flow.
+    Subtracts from that stage's WIP. The batch becomes 'done' once
+    total_completions + total_rejects >= batch.quantity."""
+
+    __tablename__ = "batch_completions"
+
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("batches.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("stages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    quantity: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    completed_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
 class MaterialConsumption(BaseModel):
     """Raw material consumed by a batch at a stage. Snapshots stock before/after for audit."""
 

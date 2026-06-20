@@ -119,10 +119,17 @@ class RejectHistoryLine(BaseModel):
     created_at: datetime
 
 
+class CompletionHistoryLine(BaseModel):
+    stage_name: Optional[str] = None
+    quantity: Decimal
+    created_at: datetime
+
+
 class BatchHistoryResponse(BaseModel):
     movements: List[MovementHistoryLine] = Field(default_factory=list)
     consumption: List[ConsumptionHistoryLine] = Field(default_factory=list)
     rejects: List[RejectHistoryLine] = Field(default_factory=list)
+    completions: List[CompletionHistoryLine] = Field(default_factory=list)
 
 
 class BatchRejectDto(BaseModel):
