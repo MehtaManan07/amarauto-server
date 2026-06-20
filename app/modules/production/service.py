@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
 
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_    
 from sqlalchemy.orm import Session, aliased
 
 from app.core.db.engine import run_db
@@ -26,6 +26,12 @@ from app.modules.operations.models import Operation
 from .models import (
     Batch, BatchMovement, BatchReject, MaterialConsumption,
     BATCH_OPEN, BATCH_IN_PROGRESS,
+)
+from .schemas import (
+    BatchCreateDto, BatchAdvanceDto, BatchRejectDto, BatchUpdateDto,
+    BatchResponse, BatchDetailResponse, BatchWipLine, ConsumptionLine,
+    BatchHistoryResponse, MovementHistoryLine, ConsumptionHistoryLine, RejectHistoryLine,
+    MaterialPreviewResponse, MaterialPreviewLine,
 )
 
 ZERO = Decimal("0")
@@ -124,7 +130,6 @@ class _ProductLite:
 
 
 def _to_response(batch: Batch, product, current: Optional[Stage]):
-    from .schemas import BatchResponse
     return BatchResponse(
         id=batch.id,
         batch_no=batch.batch_no,
@@ -145,11 +150,15 @@ def _to_response(batch: Batch, product, current: Optional[Stage]):
 
 
 def _detail(db: Session, batch: Batch, product, stages: List[Stage],
-            consumption=None, warnings=None):
-    """Build a BatchDetailResponse (batch + full per-stage WIP, + any move's consumption)."""
-    from .schemas import BatchDetailResponse, BatchWipLine
+            consumption=None, warnings=None, wip: Optional[Dict[int, Decimal]] = None):
+    """Build a BatchDetailResponse (batch + full per-stage WIP, + any move's consumption).
 
-    wip = _wip_by_stage(db, batch.id)
+    `wip` may be passed pre-computed by a caller that already knows the post-write state
+    (e.g. advance applies the move's delta in memory) to avoid re-deriving it from the
+    ledger. When omitted, it's derived fresh — the two are equal by the ledger's definition
+    (waiting = moved_in - moved_out - rejected)."""
+    if wip is None:
+        wip = _wip_by_stage(db, batch.id)
     cur = _current_stage(wip, stages)
     base = _to_response(batch, product, cur)
     lines = [
@@ -206,14 +215,21 @@ def _consume_stage(db: Session, batch: Batch, stage: Stage, qty: Decimal):
     """Consume `stage`'s BOM for `qty` units of `batch`: one material_consumption row per
     material (lines summed), decrement stock, warn-and-allow on negative. Returns
     (consumption_lines, warnings)."""
-    from .schemas import ConsumptionLine
-
     agg = _aggregate_materials(_stage_bom_rows(db, batch.product_id, stage.id, batch.colour))
     consumption, warnings = [], []
     now = datetime.utcnow()
+    # One round-trip for all materials' stock instead of one db.get per material (N+1).
+    # These are the same identity-mapped instances db.get would return, so mutating
+    # rm.stock_qty still emits the same UPDATE on flush.
+    by_id = {
+        rm.id: rm
+        for rm in db.execute(
+            select(RawMaterial).where(RawMaterial.id.in_(agg.keys()))
+        ).scalars().all()
+    } if agg else {}
     for rm_id, (per_unit, name, unit) in agg.items():
         need = _q(per_unit * qty)
-        rm = db.get(RawMaterial, rm_id)
+        rm = by_id.get(rm_id)
         prev = (rm.stock_qty if rm and rm.stock_qty is not None else ZERO)
         new = prev - need
         short = new < 0
@@ -287,7 +303,7 @@ def _next_batch_no(db: Session) -> str:
 
 class BatchService:
     @staticmethod
-    async def create(dto, user_id: Optional[int] = None):
+    async def create(dto: BatchCreateDto, user_id: Optional[int] = None):
         def _create(db: Session):
             product = _require_product(db, dto.product_id)
 
@@ -342,7 +358,7 @@ class BatchService:
         return await run_db(_create)
 
     @staticmethod
-    async def advance(batch_id: int, dto, user_id: Optional[int] = None):
+    async def advance(batch_id: int, dto: BatchAdvanceDto, user_id: Optional[int] = None):
         def _advance(db: Session):
             batch = db.execute(
                 select(Batch).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
@@ -405,12 +421,23 @@ class BatchService:
             product = db.execute(
                 select(Product).where(Product.id == batch.product_id)
             ).scalar_one_or_none()
-            return _detail(db, batch, product, stages, consumption, warnings)
+
+            # Post-move WIP = pre-move WIP + this one movement's effect. By the ledger
+            # definition (waiting = moved_in - moved_out - rejected), inserting a single
+            # (from -> to, qty) movement shifts exactly: -qty at `from`, +qty at `to`,
+            # everything else unchanged (consume touches stock, not unit WIP). So we apply
+            # the delta in memory instead of re-deriving WIP from the ledger (saves 3 trips).
+            # INVARIANT: advance writes exactly one movement and no rejects — if that ever
+            # changes, update this delta or pass wip=None to fall back to re-derivation.
+            wip_after = dict(wip)
+            wip_after[from_stage.id] = (wip_after.get(from_stage.id) or ZERO) - dto.quantity
+            wip_after[to_stage.id] = (wip_after.get(to_stage.id) or ZERO) + dto.quantity
+            return _detail(db, batch, product, stages, consumption, warnings, wip=wip_after)
 
         return await run_db(_advance)
 
     @staticmethod
-    async def reject(batch_id: int, dto, user_id: Optional[int] = None):
+    async def reject(batch_id: int, dto: BatchRejectDto, user_id: Optional[int] = None):
         def _reject(db: Session):
             batch = db.execute(
                 select(Batch).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
@@ -459,11 +486,7 @@ class BatchService:
 
     @staticmethod
     async def history(batch_id: int):
-        from .schemas import (
-            BatchHistoryResponse, MovementHistoryLine, ConsumptionHistoryLine, RejectHistoryLine,
-        )
-
-        def _hist(db: Session) -> "BatchHistoryResponse":
+        def _hist(db: Session) -> BatchHistoryResponse:
             if not db.execute(
                 select(Batch.id).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
             ).first():
@@ -511,7 +534,6 @@ class BatchService:
 
     @staticmethod
     async def material_preview(batch_id: int, stage_id: int, quantity: Decimal):
-        from .schemas import MaterialPreviewResponse, MaterialPreviewLine
 
         def _preview(db: Session) -> MaterialPreviewResponse:
             batch = db.execute(
@@ -526,10 +548,20 @@ class BatchService:
                 raise ValidationError(f"Stage {stage_id} does not exist")
 
             agg = _aggregate_materials(_stage_bom_rows(db, batch.product_id, stage.id, batch.colour))
+            # One round-trip for all materials instead of one db.get per material (N+1).
+            # This preview fires on every keystroke in the move dialog, so the per-material
+            # round-trips were the hottest avoidable cost on the read path. Same objects
+            # db.get would return; stock read verbatim (preserves the stored 0.00 scale).
+            by_id = {
+                rm.id: rm
+                for rm in db.execute(
+                    select(RawMaterial).where(RawMaterial.id.in_(agg.keys()))
+                ).scalars().all()
+            } if agg else {}
             lines = []
             for rm_id, (per_unit, name, unit) in agg.items():
                 need = _q(per_unit * quantity)
-                rm = db.get(RawMaterial, rm_id)
+                rm = by_id.get(rm_id)
                 stock = (rm.stock_qty if rm and rm.stock_qty is not None else ZERO)
                 shortage = max(ZERO, need - stock)
                 lines.append(MaterialPreviewLine(
@@ -604,7 +636,7 @@ class BatchService:
         return await run_db(_find)
 
     @staticmethod
-    async def update(batch_id: int, dto):
+    async def update(batch_id: int, dto: BatchUpdateDto):
         def _update(db: Session):
             batch = db.execute(
                 select(Batch).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
