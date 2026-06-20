@@ -12,6 +12,7 @@ from app.modules.products.models import Product
 from app.modules.raw_materials.models import RawMaterial
 from app.modules.parties.models import Party
 from app.modules.work_logs.models import WorkLog
+from app.modules.production.models import Batch, BATCH_OPEN, BATCH_IN_PROGRESS, BATCH_DONE
 from app.modules.dashboard.schemas import (
     DashboardStatsResponse,
     ProductionTrendItem,
@@ -37,8 +38,9 @@ class DashboardService:
         def _get_stats(db: Session) -> DashboardStatsResponse:
             today = date.today()
             week_start = today - timedelta(days=7)
+            month_start = today.replace(day=1).isoformat()
 
-            # Single query: all 7 counts via scalar subqueries — one DB round-trip
+            # Single query: all counts + production KPIs via scalar subqueries — one round-trip
             row = db.execute(
                 select(
                     select(func.count())
@@ -89,6 +91,49 @@ class DashboardService:
                     .correlate(None)
                     .scalar_subquery()
                     .label("work_logs_this_week"),
+
+                    # Production KPIs
+                    select(func.count())
+                    .where(
+                        Batch.deleted_at.is_(None),
+                        Batch.status.in_([BATCH_OPEN, BATCH_IN_PROGRESS]),
+                    )
+                    .correlate(None)
+                    .scalar_subquery()
+                    .label("active_batches"),
+
+                    func.coalesce(
+                        select(func.sum(Batch.quantity))
+                        .where(
+                            Batch.deleted_at.is_(None),
+                            Batch.status.in_([BATCH_OPEN, BATCH_IN_PROGRESS]),
+                        )
+                        .correlate(None)
+                        .scalar_subquery(),
+                        0,
+                    ).label("units_on_floor"),
+
+                    select(func.count())
+                    .where(
+                        Batch.deleted_at.is_(None),
+                        Batch.status == BATCH_DONE,
+                        Batch.completed_at >= month_start,
+                    )
+                    .correlate(None)
+                    .scalar_subquery()
+                    .label("completed_batches_month"),
+
+                    func.coalesce(
+                        select(func.sum(Batch.quantity))
+                        .where(
+                            Batch.deleted_at.is_(None),
+                            Batch.status == BATCH_DONE,
+                            Batch.completed_at >= month_start,
+                        )
+                        .correlate(None)
+                        .scalar_subquery(),
+                        0,
+                    ).label("completed_units_month"),
                 )
             ).one()
 
@@ -100,6 +145,10 @@ class DashboardService:
                 parties_count=row.parties_count or 0,
                 work_logs_today=row.work_logs_today or 0,
                 work_logs_this_week=row.work_logs_this_week or 0,
+                active_batches=row.active_batches or 0,
+                units_on_floor=Decimal(str(row.units_on_floor or 0)),
+                completed_batches_month=row.completed_batches_month or 0,
+                completed_units_month=Decimal(str(row.completed_units_month or 0)),
             )
 
         result = await run_db(_get_stats)
