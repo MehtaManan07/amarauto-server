@@ -155,8 +155,10 @@ def _detail(db: Session, batch: Batch, product, stages: List[Stage],
                      waiting=(wip.get(s.id) or ZERO))
         for s in stages
     ]
+    # exclude wip from the spread — BatchResponse now carries it, and we pass the full
+    # (all-stages) detail wip explicitly below.
     return BatchDetailResponse(
-        **base.model_dump(), wip=lines,
+        **base.model_dump(exclude={"wip"}), wip=lines,
         consumption=consumption or [], warnings=warnings or [],
     )
 
