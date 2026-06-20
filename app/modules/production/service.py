@@ -84,10 +84,8 @@ def _current_stage(wip: Dict[int, Decimal], stages: List[Stage]) -> Optional[Sta
     return None
 
 
-def _bulk_current_stage(
-    db: Session, batch_ids: List[int], stages: List[Stage]
-) -> Dict[int, Optional[Stage]]:
-    """{batch_id: current Stage or None} for a page of batches, in 3 grouped queries."""
+def _bulk_wip(db: Session, batch_ids: List[int]) -> Dict[int, Dict[int, Decimal]]:
+    """{batch_id: {stage_id: waiting}} for a page of batches, in 3 grouped queries."""
     if not batch_ids:
         return {}
 
@@ -109,16 +107,7 @@ def _bulk_current_stage(
         waiting[bid][sid] = waiting[bid].get(sid, ZERO) - (qty or ZERO)
     for bid, sid, qty in grouped(BatchReject.stage_id, BatchReject):
         waiting[bid][sid] = waiting[bid].get(sid, ZERO) - (qty or ZERO)
-
-    out: Dict[int, Optional[Stage]] = {}
-    for bid in batch_ids:
-        cur = None
-        for s in sorted(stages, key=lambda x: x.sequence, reverse=True):
-            if waiting[bid].get(s.id, ZERO) > 0:
-                cur = s
-                break
-        out[bid] = cur
-    return out
+    return waiting
 
 
 # ----------------------------- response shaping -----------------------------
@@ -609,13 +598,23 @@ class BatchService:
 
             rows, total = paginate_multi(db, query, page, page_size)
             stages = _active_stages(db)
+            ordered = sorted(stages, key=lambda s: s.sequence, reverse=True)
             batch_ids = [b.id for (b, _pn, _nm) in rows]
-            current = _bulk_current_stage(db, batch_ids, stages)
+            wip_map = _bulk_wip(db, batch_ids)
 
-            items = [
-                _to_response(b, _ProductLite(pn, nm), current.get(b.id))
-                for (b, pn, nm) in rows
-            ]
+            items = []
+            for (b, pn, nm) in rows:
+                w = wip_map.get(b.id, {})
+                current = next((s for s in ordered if (w.get(s.id) or ZERO) > 0), None)
+                resp = _to_response(b, _ProductLite(pn, nm), current)
+                # Per-stage split (non-zero stages only) so the board can show a batch in
+                # every stage it has units, not just the furthest one.
+                resp.wip = [
+                    BatchWipLine(stage_id=s.id, stage_name=s.name, sequence=s.sequence,
+                                 waiting=(w.get(s.id) or ZERO))
+                    for s in stages if (w.get(s.id) or ZERO) != 0
+                ]
+                items.append(resp)
             return build_paginated_response(items, total, page, page_size)
 
         return await run_db(_find)

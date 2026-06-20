@@ -58,6 +58,9 @@ class BatchResponse(BaseModel):
     # Derived: where the units currently sit (highest-sequence stage with waiting > 0).
     current_stage_id: Optional[int] = None
     current_stage_name: Optional[str] = None
+    # Derived: units waiting per stage (only stages with waiting != 0). The board uses this
+    # to show a batch in EVERY stage it has units, not just the furthest one.
+    wip: List[BatchWipLine] = Field(default_factory=list)
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
