@@ -41,33 +41,30 @@ RAW_MATERIALS = [  # (name, unit_type, stock_qty)
     ("TEST-FABRIC", "m", 100000),
     ("TEST-FOAM", "sheet", 100000),
     ("TEST-THREAD", "cone", 100000),
-    ("TEST-ZIPPER", "pc", 100000),
     ("TEST-LABEL", "pc", 100000),
 ]
 PRODUCTS = [  # (part_no, name)
     ("TEST-P1", "TEST Car Seat Cover"),
     ("TEST-P2", "TEST Neck Pillow"),
 ]
+# Mirrors the real 3-stage flow: CUTTING → STITCHING → FINISHING (no assembly in client data).
 # product part_no -> [(stage_name, raw_material_name, qty_per_batch)]  (batch_size = 1)
 BOM = {
     "TEST-P1": [
         ("CUTTING", "TEST-FABRIC", 3), ("CUTTING", "TEST-FOAM", 2),
         ("STITCHING", "TEST-THREAD", 1),
         ("FINISHING", "TEST-LABEL", 1),
-        ("ASSEMBLY", "TEST-ZIPPER", 1),
     ],
-    "TEST-P2": [  # skips FINISHING — exercises the "advance to next stage with a recipe" path
+    "TEST-P2": [  # skips FINISHING — exercises the stage-skipping path
         ("CUTTING", "TEST-FABRIC", 2),
         ("STITCHING", "TEST-THREAD", 1),
-        ("ASSEMBLY", "TEST-ZIPPER", 1),
     ],
 }
 # product part_no -> [(stage_name, code, name, rate)]
 OPERATIONS = {
     "TEST-P1": [("CUTTING", "TCUT1", "Test cut", 5), ("STITCHING", "TSTITCH1", "Test stitch", 8),
-                ("FINISHING", "TFINISH1", "Test finish", 4), ("ASSEMBLY", "TASSEM1", "Test assemble", 6)],
-    "TEST-P2": [("CUTTING", "TCUT2", "Test cut", 5), ("STITCHING", "TSTITCH2", "Test stitch", 8),
-                ("ASSEMBLY", "TASSEM2", "Test assemble", 6)],
+                ("FINISHING", "TFINISH1", "Test finish", 4)],
+    "TEST-P2": [("CUTTING", "TCUT2", "Test cut", 5), ("STITCHING", "TSTITCH2", "Test stitch", 8)],
 }
 # parked batches (movement-only, no consumption) so the board has draggable cards
 BATCHES = [("TEST-P1", "CUTTING"), ("TEST-P2", "STITCHING")]  # (product part_no, parked_at_stage)
