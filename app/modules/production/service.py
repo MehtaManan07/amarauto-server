@@ -7,6 +7,7 @@ Creating a batch records an intake movement (from_stage NULL -> first stage); al
 there waiting. Advance/consume (14b) and rejects (14c) extend this.
 """
 
+import time
 from typing import Dict, List, Optional
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
@@ -45,10 +46,35 @@ def _q(d: Decimal) -> Decimal:
 
 # ----------------------------- WIP derivation -----------------------------
 
+# Stages are reference data (change ~twice a year) yet nearly every batch endpoint reads
+# them. Cache the active list for 60s to drop one round-trip from those calls. Cached
+# objects are expunged (detached) so the list is safe to read read-only across request
+# threads — callers only read .id/.sequence/.name and never mutate or re-persist them.
+# Invalidated immediately on any stage write (see invalidate_stages_cache), so a freshly
+# added stage never goes missing during setup.
+_stages_cache: Optional[List[Stage]] = None
+_stages_cache_at: float = 0.0
+_STAGES_TTL: float = 60.0
+
+
+def invalidate_stages_cache() -> None:
+    """Drop the active-stages cache. Called by the stages service on any create/update/delete."""
+    global _stages_cache
+    _stages_cache = None
+
+
 def _active_stages(db: Session) -> List[Stage]:
-    return list(db.execute(
+    global _stages_cache, _stages_cache_at
+    now = time.monotonic()
+    if _stages_cache is not None and (now - _stages_cache_at) < _STAGES_TTL:
+        return list(_stages_cache)
+    stages = list(db.execute(
         select(Stage).where(Stage.deleted_at.is_(None)).order_by(Stage.sequence)
     ).scalars().all())
+    for s in stages:
+        db.expunge(s)  # detach so the cached list isn't bound to this request's session
+    _stages_cache, _stages_cache_at = stages, now
+    return list(stages)
 
 
 def _wip_by_stage(db: Session, batch_id: int) -> Dict[int, Decimal]:
@@ -623,15 +649,16 @@ class BatchService:
     @staticmethod
     async def find_one(batch_id: int):
         def _find(db: Session):
-            batch = db.execute(
-                select(Batch).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
-            ).scalar_one_or_none()
-            if not batch:
+            # Batch + product in one JOIN (matches the board list) instead of two selects.
+            row = db.execute(
+                select(Batch, Product.part_no, Product.name)
+                .join(Product, Batch.product_id == Product.id)
+                .where(Batch.id == batch_id, Batch.deleted_at.is_(None))
+            ).first()
+            if not row:
                 raise NotFoundError("Batch", batch_id)
-            product = db.execute(
-                select(Product).where(Product.id == batch.product_id)
-            ).scalar_one_or_none()
-            return _detail(db, batch, product, _active_stages(db))
+            batch, part_no, name = row
+            return _detail(db, batch, _ProductLite(part_no, name), _active_stages(db))
 
         return await run_db(_find)
 

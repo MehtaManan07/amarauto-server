@@ -10,6 +10,7 @@ from datetime import datetime
 
 from app.core.db.engine import run_db
 from app.core.exceptions import ConflictError, NotFoundError
+from app.modules.production.service import invalidate_stages_cache
 from app.modules.stages.models import Stage
 from app.modules.stages.schemas import (
     StageCreateDto,
@@ -54,6 +55,7 @@ class StageService:
             )
             db.add(row)
             db.flush()
+            invalidate_stages_cache()
             return _to_response(row)
 
         return await run_db(_create)
@@ -110,6 +112,7 @@ class StageService:
                 setattr(row, k, v)
             row.updated_at = datetime.utcnow()
             db.flush()
+            invalidate_stages_cache()
             return _to_response(row)
 
         return await run_db(_update)
@@ -124,5 +127,6 @@ class StageService:
                 raise NotFoundError("Stage", stage_id)
             row.deleted_at = datetime.utcnow()
             db.flush()
+            invalidate_stages_cache()
 
         await run_db(_remove)
