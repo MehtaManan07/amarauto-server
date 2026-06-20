@@ -278,6 +278,3 @@ alembic.ini.backup
 alembic/versions/*.pyc
 ca.pem
 *.csv
-# local dev SQLite copy of Turso
-local_dev.db
-local_dev.db-*
