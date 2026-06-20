@@ -19,6 +19,7 @@ from .schemas import (
     BatchPaginatedResponse,
     MaterialPreviewResponse,
     BatchHistoryResponse,
+    RegisterResponse,
 )
 
 router = APIRouter(prefix="/batches", tags=["batches"])
@@ -110,6 +111,31 @@ async def update_batch(
 ):
     """Light edits (style/colour/status). Quantities move via advance/reject, not here."""
     return await BatchService.update(batch_id, dto)
+
+
+@router.post("/{batch_id}/complete", response_model=BatchDetailResponse)
+async def complete_batch(
+    batch_id: int,
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Mark a batch as done. Stamps completed_at; batch leaves the active board."""
+    return await BatchService.complete(batch_id, user_id=current_user.user_id)
+
+
+@router.get("/register/list", response_model=RegisterResponse)
+async def production_register(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    product_id: Optional[int] = Query(None, gt=0),
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Production Register — completed jobs with stats and cycle times."""
+    return await BatchService.register(
+        page=page, page_size=page_size,
+        from_date=from_date, to_date=to_date, product_id=product_id,
+    )
 
 
 @router.delete("/{batch_id}")

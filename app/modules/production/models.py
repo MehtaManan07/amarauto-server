@@ -49,6 +49,9 @@ class Batch(BaseModel):
     created_by: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
 
 
 class BatchMovement(BaseModel):

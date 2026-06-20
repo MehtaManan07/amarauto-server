@@ -64,6 +64,7 @@ class BatchResponse(BaseModel):
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    completed_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
 
     class Config:
@@ -160,3 +161,38 @@ class BatchPaginatedResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class RegisterJobLine(BaseModel):
+    """One completed job in the Production Register."""
+    id: int
+    batch_no: str
+    product_id: int
+    product_part_no: Optional[str] = None
+    product_name: Optional[str] = None
+    colour: Optional[str] = None
+    quantity: Decimal
+    completed_at: datetime
+    created_at: datetime
+    cycle_days: Optional[float] = None   # completed_at - created_at, in days
+    total_rejected: Decimal = Decimal("0")
+
+
+class RegisterStatsResponse(BaseModel):
+    """Summary stats for the Production Register header tiles."""
+    jobs_this_month: int
+    units_this_month: Decimal
+    jobs_all_time: int
+    units_all_time: Decimal
+    avg_cycle_days: Optional[float] = None
+    total_rejected_all_time: Decimal = Decimal("0")
+
+
+class RegisterResponse(BaseModel):
+    stats: RegisterStatsResponse
+    items: List[RegisterJobLine]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_more: bool

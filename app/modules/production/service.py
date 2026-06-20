@@ -25,13 +25,14 @@ from app.modules.raw_materials.models import RawMaterial
 from app.modules.operations.models import Operation
 from .models import (
     Batch, BatchMovement, BatchReject, MaterialConsumption,
-    BATCH_OPEN, BATCH_IN_PROGRESS,
+    BATCH_OPEN, BATCH_IN_PROGRESS, BATCH_DONE,
 )
 from .schemas import (
     BatchCreateDto, BatchAdvanceDto, BatchRejectDto, BatchUpdateDto,
     BatchResponse, BatchDetailResponse, BatchWipLine, ConsumptionLine,
     BatchHistoryResponse, MovementHistoryLine, ConsumptionHistoryLine, RejectHistoryLine,
     MaterialPreviewResponse, MaterialPreviewLine,
+    RegisterResponse, RegisterStatsResponse, RegisterJobLine,
 )
 
 ZERO = Decimal("0")
@@ -671,3 +672,109 @@ class BatchService:
             db.flush()
 
         await run_db(_remove)
+
+    @staticmethod
+    async def complete(batch_id: int, user_id: Optional[int] = None) -> "BatchDetailResponse":
+        def _complete(db: Session) -> BatchDetailResponse:
+            batch = db.execute(
+                select(Batch).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
+            ).scalar_one_or_none()
+            if not batch:
+                raise NotFoundError("Batch", batch_id)
+            if batch.status == BATCH_DONE:
+                raise ValidationError("Batch is already completed")
+            now = datetime.utcnow()
+            batch.status = BATCH_DONE
+            batch.completed_at = now
+            batch.updated_at = now
+            db.flush()
+            row = db.execute(
+                select(Batch, Product.part_no, Product.name)
+                .join(Product, Batch.product_id == Product.id)
+                .where(Batch.id == batch_id)
+            ).first()
+            return _detail(db, row[0], _ProductLite(row[1], row[2]), _active_stages(db))
+
+        return await run_db(_complete)
+
+    @staticmethod
+    async def register(page: int = 1, page_size: int = 50,
+                       from_date: Optional[str] = None, to_date: Optional[str] = None,
+                       product_id: Optional[int] = None) -> RegisterResponse:
+        from math import ceil
+
+        def _reg(db: Session) -> RegisterResponse:
+            q = (
+                select(Batch, Product.part_no, Product.name)
+                .join(Product, Batch.product_id == Product.id)
+                .where(Batch.status == BATCH_DONE, Batch.deleted_at.is_(None),
+                       Batch.completed_at.isnot(None))
+            )
+            if product_id:
+                q = q.where(Batch.product_id == product_id)
+            if from_date:
+                q = q.where(Batch.completed_at >= from_date)
+            if to_date:
+                q = q.where(Batch.completed_at <= to_date + " 23:59:59")
+            q = q.order_by(Batch.completed_at.desc())
+
+            all_rows = db.execute(q).all()
+            total = len(all_rows)
+            offset = (page - 1) * page_size
+            page_rows = all_rows[offset: offset + page_size]
+
+            batch_ids = [b.id for (b, _, _) in all_rows]
+            # Total rejected per batch — one grouped query for all.
+            reject_map: dict = {}
+            if batch_ids:
+                for bid, qty in db.execute(
+                    select(BatchReject.batch_id, func.sum(BatchReject.quantity))
+                    .where(BatchReject.batch_id.in_(batch_ids), BatchReject.deleted_at.is_(None))
+                    .group_by(BatchReject.batch_id)
+                ).all():
+                    reject_map[bid] = qty or ZERO
+
+            # Stats across ALL completed (not just this page).
+            from datetime import date
+            today = date.today()
+            jobs_all = total
+            units_all = sum(_q(b.quantity) for (b, _, _) in all_rows)
+            jobs_month = sum(1 for (b, _, _) in all_rows
+                             if b.completed_at and b.completed_at.date() >= today.replace(day=1))
+            units_month = sum(_q(b.quantity) for (b, _, _) in all_rows
+                              if b.completed_at and b.completed_at.date() >= today.replace(day=1))
+            total_rejected = sum(reject_map.get(b.id, ZERO) for (b, _, _) in all_rows)
+            cycle_times = [
+                (b.completed_at - b.created_at).total_seconds() / 86400
+                for (b, _, _) in all_rows
+                if b.completed_at and b.created_at
+            ]
+            avg_cycle = round(sum(cycle_times) / len(cycle_times), 1) if cycle_times else None
+
+            stats = RegisterStatsResponse(
+                jobs_this_month=jobs_month, units_this_month=units_month,
+                jobs_all_time=jobs_all, units_all_time=units_all,
+                avg_cycle_days=avg_cycle, total_rejected_all_time=total_rejected,
+            )
+
+            items = []
+            for (b, pn, nm) in page_rows:
+                cycle = None
+                if b.completed_at and b.created_at:
+                    cycle = round((b.completed_at - b.created_at).total_seconds() / 86400, 1)
+                items.append(RegisterJobLine(
+                    id=b.id, batch_no=b.batch_no, product_id=b.product_id,
+                    product_part_no=pn, product_name=nm,
+                    colour=b.colour, quantity=b.quantity,
+                    completed_at=b.completed_at, created_at=b.created_at,
+                    cycle_days=cycle, total_rejected=reject_map.get(b.id, ZERO),
+                ))
+
+            total_pages = max(1, ceil(total / page_size))
+            return RegisterResponse(
+                stats=stats, items=items, total=total,
+                page=page, page_size=page_size,
+                total_pages=total_pages, has_more=page < total_pages,
+            )
+
+        return await run_db(_reg)
