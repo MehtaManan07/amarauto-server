@@ -17,6 +17,7 @@ from .schemas import (
     BulkUploadResponse,
     FieldOptionsResponse,
     AdjustStockRequest,
+    ConsumptionResponse,
 )
 
 router = APIRouter(prefix="/raw-materials", tags=["raw-materials"])
@@ -130,3 +131,19 @@ async def delete_raw_material(
     """Soft delete raw material."""
     await RawMaterialService.remove(material_id)
     return {"message": "Raw material deleted successfully"}
+
+
+@router.get("/{material_id}/consumption", response_model=ConsumptionResponse)
+async def get_consumption(
+    material_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    current_user: TokenData = Depends(require_any_role),
+):
+    """Production consumption history for a raw material — which batches used it, when, how much."""
+    return await RawMaterialService.consumption(
+        material_id, page=page, page_size=page_size,
+        from_date=from_date, to_date=to_date,
+    )

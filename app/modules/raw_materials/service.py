@@ -3,9 +3,10 @@ Raw materials service. find_all with powerful search; check_stock for low/below-
 """
 
 from typing import Dict, List, Optional
-from sqlalchemy import select, or_, union_all, literal
+from math import ceil
+from sqlalchemy import select, func, or_, union_all, literal
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, date
 from decimal import Decimal
 
 from app.core.db.engine import run_db
@@ -21,6 +22,8 @@ from app.modules.raw_materials.schemas import (
     StockCheckResponse,
     BulkUploadResponse,
     BulkUploadItemResult,
+    ConsumptionEventLine,
+    ConsumptionResponse,
 )
 
 
@@ -413,3 +416,67 @@ class RawMaterialService:
                 for r in rows
             ]
         return await run_db(_check)
+
+    @staticmethod
+    async def consumption(
+        material_id: int,
+        page: int = 1,
+        page_size: int = 50,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+    ) -> ConsumptionResponse:
+        from app.modules.production.models import MaterialConsumption
+        from app.modules.production.models import Batch
+        from app.modules.products.models import Product
+        from app.modules.stages.models import Stage
+
+        def _get(db: Session) -> ConsumptionResponse:
+            q = (
+                select(MaterialConsumption, Batch.batch_no, Product.part_no, Product.name, Stage.name)
+                .join(Batch, MaterialConsumption.batch_id == Batch.id)
+                .join(Product, Batch.product_id == Product.id)
+                .outerjoin(Stage, MaterialConsumption.stage_id == Stage.id)
+                .where(
+                    MaterialConsumption.raw_material_id == material_id,
+                    MaterialConsumption.deleted_at.is_(None),
+                    Batch.deleted_at.is_(None),
+                )
+            )
+            if from_date:
+                q = q.where(MaterialConsumption.created_at >= from_date)
+            if to_date:
+                q = q.where(MaterialConsumption.created_at <= to_date + " 23:59:59")
+            q = q.order_by(MaterialConsumption.created_at.desc(), MaterialConsumption.id.desc())
+
+            all_rows = db.execute(q).all()
+            total = len(all_rows)
+            offset = (page - 1) * page_size
+            page_rows = all_rows[offset: offset + page_size]
+
+            today = date.today()
+            month_start = today.replace(day=1).isoformat()
+            total_all = sum(r.qty_consumed for (r, *_) in all_rows if r.qty_consumed)
+            total_month = sum(
+                r.qty_consumed for (r, *_) in all_rows
+                if r.qty_consumed and r.created_at and r.created_at.date() >= today.replace(day=1)
+            )
+
+            items = [
+                ConsumptionEventLine(
+                    id=r.id, batch_id=r.batch_id, batch_no=batch_no,
+                    product_part_no=part_no, product_name=prod_name,
+                    stage_name=stage_name, qty_consumed=r.qty_consumed,
+                    previous_qty=r.previous_qty, new_qty=r.new_qty,
+                    created_at=r.created_at,
+                )
+                for (r, batch_no, part_no, prod_name, stage_name) in page_rows
+            ]
+            total_pages = max(1, ceil(total / page_size))
+            return ConsumptionResponse(
+                items=items, total=total, page=page, page_size=page_size,
+                total_pages=total_pages, has_more=page < total_pages,
+                total_consumed_all_time=total_all,
+                total_consumed_this_month=total_month,
+            )
+
+        return await run_db(_get)
