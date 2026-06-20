@@ -683,6 +683,26 @@ class BatchService:
                 raise NotFoundError("Batch", batch_id)
             if batch.status == BATCH_DONE:
                 raise ValidationError("Batch is already completed")
+
+            # Validate: every non-zero WIP entry must be at the last stage.
+            # Units still waiting at earlier stages means the batch isn't done yet.
+            stages = _active_stages(db)
+            if not stages:
+                raise ValidationError("No stages configured")
+            last_stage = stages[-1]
+            wip = _wip_by_stage(db, batch.id)
+            stuck = [
+                sid for sid, waiting in wip.items()
+                if (waiting or ZERO) > ZERO and sid != last_stage.id
+            ]
+            if stuck:
+                stage_names = {s.id: s.name for s in stages}
+                names = ", ".join(stage_names.get(sid, f"stage {sid}") for sid in stuck)
+                raise ValidationError(
+                    f"Cannot complete: units still waiting at {names}. "
+                    f"Move them to {last_stage.name} or scrap them first."
+                )
+
             now = datetime.utcnow()
             batch.status = BATCH_DONE
             batch.completed_at = now
