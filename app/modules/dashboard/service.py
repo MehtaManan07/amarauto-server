@@ -12,9 +12,14 @@ from app.modules.products.models import Product
 from app.modules.raw_materials.models import RawMaterial
 from app.modules.parties.models import Party
 from app.modules.work_logs.models import WorkLog
-from app.modules.production.models import Batch, BATCH_OPEN, BATCH_IN_PROGRESS, BATCH_DONE
+from app.modules.production.models import Batch, BatchCompletion, BATCH_OPEN, BATCH_IN_PROGRESS, BATCH_DONE
+from app.modules.production.models import BatchMovement, BatchReject
+from app.modules.stages.models import Stage
 from app.modules.dashboard.schemas import (
     DashboardStatsResponse,
+    LowStockItem,
+    FloorStageItem,
+    DailyCompletion,
     ProductionTrendItem,
     ProductionTrendResponse,
 )
@@ -137,6 +142,100 @@ class DashboardService:
                 )
             ).one()
 
+            # Low stock materials (top 8, below min_stock_req).
+            low_stock_rows = db.execute(
+                select(RawMaterial)
+                .where(
+                    RawMaterial.deleted_at.is_(None),
+                    RawMaterial.min_stock_req.isnot(None),
+                    RawMaterial.stock_qty < RawMaterial.min_stock_req,
+                )
+                .order_by(RawMaterial.stock_qty)
+                .limit(8)
+            ).scalars().all()
+            low_stock_materials = [
+                LowStockItem(id=r.id, name=r.name, stock_qty=r.stock_qty or Decimal("0"),
+                             min_stock_req=r.min_stock_req, unit_type=r.unit_type)
+                for r in low_stock_rows
+            ]
+
+            # Floor by stage: batch count + unit count per active stage.
+            stages = db.execute(
+                select(Stage).where(Stage.deleted_at.is_(None)).order_by(Stage.sequence)
+            ).scalars().all()
+            active_batch_ids = [
+                bid for (bid,) in db.execute(
+                    select(Batch.id).where(
+                        Batch.deleted_at.is_(None),
+                        Batch.status.in_([BATCH_OPEN, BATCH_IN_PROGRESS]),
+                    )
+                ).all()
+            ]
+            # Derive current stage for each active batch via WIP (moved_in - moved_out - rejected - completed).
+            from collections import defaultdict
+            stage_seq = {s.id: s.sequence for s in stages}
+            wip: dict = {bid: defaultdict(Decimal) for bid in active_batch_ids}
+            if active_batch_ids:
+                for bid, sid, qty in db.execute(
+                    select(BatchMovement.batch_id, BatchMovement.to_stage_id, func.sum(BatchMovement.quantity))
+                    .where(BatchMovement.batch_id.in_(active_batch_ids), BatchMovement.deleted_at.is_(None))
+                    .group_by(BatchMovement.batch_id, BatchMovement.to_stage_id)
+                ).all():
+                    wip[bid][sid] += qty or Decimal("0")
+                for bid, sid, qty in db.execute(
+                    select(BatchMovement.batch_id, BatchMovement.from_stage_id, func.sum(BatchMovement.quantity))
+                    .where(BatchMovement.batch_id.in_(active_batch_ids), BatchMovement.deleted_at.is_(None),
+                           BatchMovement.from_stage_id.isnot(None))
+                    .group_by(BatchMovement.batch_id, BatchMovement.from_stage_id)
+                ).all():
+                    wip[bid][sid] -= qty or Decimal("0")
+                for bid, sid, qty in db.execute(
+                    select(BatchReject.batch_id, BatchReject.stage_id, func.sum(BatchReject.quantity))
+                    .where(BatchReject.batch_id.in_(active_batch_ids), BatchReject.deleted_at.is_(None))
+                    .group_by(BatchReject.batch_id, BatchReject.stage_id)
+                ).all():
+                    wip[bid][sid] -= qty or Decimal("0")
+                from app.modules.production.models import BatchCompletion as BC
+                for bid, sid, qty in db.execute(
+                    select(BC.batch_id, BC.stage_id, func.sum(BC.quantity))
+                    .where(BC.batch_id.in_(active_batch_ids), BC.deleted_at.is_(None))
+                    .group_by(BC.batch_id, BC.stage_id)
+                ).all():
+                    wip[bid][sid] -= qty or Decimal("0")
+            # Aggregate: for each batch, sum units waiting per stage.
+            stage_batches: dict = defaultdict(int)
+            stage_units: dict = defaultdict(Decimal)
+            for bid, stage_wip in wip.items():
+                for sid, waiting in stage_wip.items():
+                    if waiting > 0 and sid in stage_seq:
+                        stage_batches[sid] += 1
+                        stage_units[sid] += waiting
+            floor_by_stage = [
+                FloorStageItem(stage_id=s.id, stage_name=s.name, sequence=s.sequence,
+                               batch_count=stage_batches.get(s.id, 0),
+                               unit_count=stage_units.get(s.id, Decimal("0")))
+                for s in stages
+            ]
+
+            # Daily completions — last 30 days.
+            thirty_ago = (today - timedelta(days=29)).isoformat()
+            comp_rows = db.execute(
+                select(BatchCompletion.created_at, BatchCompletion.quantity)
+                .where(
+                    BatchCompletion.deleted_at.is_(None),
+                    BatchCompletion.created_at >= thirty_ago,
+                )
+            ).all()
+            daily: dict = defaultdict(Decimal)
+            for created_at, qty in comp_rows:
+                if created_at:
+                    daily[created_at.date().isoformat()] += qty or Decimal("0")
+            all_dates = [(today - timedelta(days=i)).isoformat() for i in range(29, -1, -1)]
+            daily_completions = [
+                DailyCompletion(date=d, units=daily.get(d, Decimal("0")))
+                for d in all_dates
+            ]
+
             return DashboardStatsResponse(
                 total_products=row.total_products or 0,
                 active_products=row.active_products or 0,
@@ -149,6 +248,9 @@ class DashboardService:
                 units_on_floor=Decimal(str(row.units_on_floor or 0)),
                 completed_batches_month=row.completed_batches_month or 0,
                 completed_units_month=Decimal(str(row.completed_units_month or 0)),
+                low_stock_materials=low_stock_materials,
+                floor_by_stage=floor_by_stage,
+                daily_completions=daily_completions,
             )
 
         result = await run_db(_get_stats)
