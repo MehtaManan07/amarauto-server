@@ -43,16 +43,18 @@ class JobRateService:
             ).scalar_one_or_none()
             if not product:
                 raise NotFoundError("Product", dto.product_id)
+            now = datetime.utcnow()
             row = JobRate(
                 product_id=dto.product_id,
                 operation_code=normalize_unicode(dto.operation_code) or dto.operation_code,
                 operation_name=normalize_unicode(dto.operation_name) or dto.operation_name,
                 rate=dto.rate,
                 sequence=dto.sequence,
+                created_at=now,
+                updated_at=now,
             )
             db.add(row)
             db.flush()
-            db.refresh(row)
             return _to_response(row, product_part_no=product.part_no)
         return await run_db(_create)
 
@@ -186,8 +188,8 @@ class JobRateService:
                 if k in ("operation_code", "operation_name") and isinstance(v, str):
                     v = normalize_unicode(v) or v
                 setattr(row, k, v)
+            row.updated_at = datetime.utcnow()
             db.flush()
-            db.refresh(row)
             if product is None:
                 product = db.execute(
                     select(Product).where(Product.id == row.product_id)

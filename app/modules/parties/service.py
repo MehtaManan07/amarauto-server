@@ -114,10 +114,10 @@ class PartyService:
             data = normalize_text_fields(
                 dto.model_dump(), PARTY_TEXT_FIELDS
             )
-            row = Party(**data)
+            now = datetime.utcnow()
+            row = Party(**data, created_at=now, updated_at=now)
             db.add(row)
             db.flush()
-            db.refresh(row)
             return _to_response(row)
         return await run_db(_create)
 
@@ -191,8 +191,8 @@ class PartyService:
             data = normalize_text_fields(data, PARTY_TEXT_FIELDS)
             for k, v in data.items():
                 setattr(row, k, v)
+            row.updated_at = datetime.utcnow()
             db.flush()
-            db.refresh(row)
             return _to_response(row)
         return await run_db(_update)
 

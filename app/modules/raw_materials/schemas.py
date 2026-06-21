@@ -3,7 +3,7 @@ RawMaterial DTOs.
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
 
@@ -119,6 +119,31 @@ class BulkUploadResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ConsumptionEventLine(BaseModel):
+    """One production consumption event for a raw material."""
+    id: int
+    batch_id: int
+    batch_no: str
+    product_part_no: Optional[str] = None
+    product_name: Optional[str] = None
+    stage_name: Optional[str] = None
+    qty_consumed: Decimal
+    previous_qty: Optional[Decimal] = None
+    new_qty: Optional[Decimal] = None
+    created_at: datetime
+
+
+class ConsumptionResponse(BaseModel):
+    items: list[ConsumptionEventLine]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_more: bool
+    total_consumed_all_time: Decimal
+    total_consumed_this_month: Decimal
 
 
 class FieldOptionsResponse(BaseModel):

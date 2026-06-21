@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,10 +17,12 @@ from app.modules.products.router import router as products_router
 from app.modules.bom.router import router as bom_router
 from app.modules.dashboard.router import router as dashboard_router
 from app.modules.inventory_logs.router import router as inventory_logs_router
-from app.modules.job_rates.router import router as job_rates_router
-from app.modules.work_logs.router import router as work_logs_router
 from app.modules.parties.router import router as parties_router
-from app.modules.production.router import router as production_router
+from app.modules.stages.router import router as stages_router
+from app.modules.operations.router import router as operations_router
+
+from app.modules.production.router import router as batches_router
+from app.modules.work_logs.router import router as work_logs_router
 
 # Configure logging to output to console
 logging.basicConfig(
@@ -38,6 +42,12 @@ async def lifespan(app: FastAPI):
     Application lifespan manager.
     """
     from app.core.db.engine import check_database_connection
+
+    # Cap the default asyncio executor used by run_db's asyncio.to_thread().
+    # Matches the SQLAlchemy pool ceiling (pool_size + max_overflow = 30) so
+    # we don't spawn more DB workers than we can give connections to.
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=30, thread_name_prefix="db"))
 
     logger.info("Starting MyStock API...")
     logger.info(f"Connecting to Turso database: {config.turso_database_url}")
@@ -93,10 +103,11 @@ app.include_router(products_router, prefix="/api")
 app.include_router(bom_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(inventory_logs_router, prefix="/api")
-app.include_router(job_rates_router, prefix="/api")
-app.include_router(work_logs_router, prefix="/api")
 app.include_router(parties_router, prefix="/api")
-app.include_router(production_router, prefix="/api")
+app.include_router(stages_router, prefix="/api")
+app.include_router(operations_router, prefix="/api")
+app.include_router(batches_router, prefix="/api")
+app.include_router(work_logs_router, prefix="/api")
 
 
 @app.get("/demo")

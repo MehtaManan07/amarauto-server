@@ -1,55 +1,145 @@
 """
-Production schemas - stage completion and inventory responses.
+Batch (production execution) DTOs.
+
+A batch is a tracked lot of one product/variant flowing through the stages. WIP is DERIVED
+from the immutable ledgers, never stored:  waiting(stage) = moved_in - moved_out - rejected.
+
+14a scope: batch create (+ intake movement), list/get, per-stage WIP. Advance/consume (14b)
+and rejects (14c) come next.
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
 
 
-class StageCompletionDto(BaseModel):
-    """Request to complete a production stage."""
+class BatchCreateDto(BaseModel):
+    product_id: int = Field(..., gt=0)
+    quantity: Decimal = Field(..., gt=0)
+    style: Optional[str] = Field(None, max_length=100)
+    colour: Optional[str] = Field(None, max_length=100)
+    # Omit batch_no to auto-generate (B-0001...). start_stage_id defaults to the first stage.
+    batch_no: Optional[str] = Field(None, max_length=50)
+    start_stage_id: Optional[int] = Field(None, gt=0)
 
-    product_id: int
-    variant: Optional[str] = None
-    stage_number: int = Field(..., ge=1, description="Which stage completing")
-    quantity: Decimal = Field(..., gt=0, description="How many units completing")
-
-
-class MaterialDeduction(BaseModel):
-    """One material deducted during stage completion."""
-
-    raw_material_id: int
-    raw_material_name: str
-    qty_deducted: Decimal
-    remaining_stock: Decimal
+    class Config:
+        from_attributes = True
 
 
-class StageInventoryResponse(BaseModel):
-    """Stage inventory row with product info."""
+class BatchUpdateDto(BaseModel):
+    """Light edits only — quantities flow through movements/rejects, not direct edits."""
+    style: Optional[str] = Field(None, max_length=100)
+    colour: Optional[str] = Field(None, max_length=100)
+    status: Optional[str] = Field(None, max_length=20)
 
+    class Config:
+        from_attributes = True
+
+
+class BatchWipLine(BaseModel):
+    """Units currently waiting at a stage for this batch (derived from ledgers)."""
+    stage_id: int
+    stage_name: str
+    sequence: int
+    waiting: Decimal
+
+
+class BatchResponse(BaseModel):
     id: int
+    batch_no: str
     product_id: int
     product_part_no: Optional[str] = None
     product_name: Optional[str] = None
-    variant: Optional[str] = None
-    stage_number: int
+    style: Optional[str] = None
+    colour: Optional[str] = None
     quantity: Decimal
+    status: str
+    # Derived: where the units currently sit (highest-sequence stage with waiting > 0).
+    current_stage_id: Optional[int] = None
+    current_stage_name: Optional[str] = None
+    # Derived: units waiting per stage (only stages with waiting != 0). The board uses this
+    # to show a batch in EVERY stage it has units, not just the furthest one.
+    wip: List[BatchWipLine] = Field(default_factory=list)
+    created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    completed_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 
-class StageCompletionResponse(BaseModel):
-    """Response after completing a stage."""
+class ConsumptionLine(BaseModel):
+    """One material consumed by a move into a stage (per-material, lines summed)."""
+    raw_material_id: int
+    raw_material_name: Optional[str] = None
+    unit_type: Optional[str] = None
+    qty_consumed: Decimal
+    previous_stock: Optional[Decimal] = None
+    new_stock: Optional[Decimal] = None
+    short: bool = False  # new_stock < 0 (warn-and-allow)
 
-    stage_inventory: StageInventoryResponse
-    materials_deducted: List[MaterialDeduction] = []
+
+class BatchDetailResponse(BatchResponse):
+    """Batch + full per-stage WIP breakdown.
+    On create/advance, `consumption` + `warnings` describe what that move just consumed."""
+    wip: List[BatchWipLine] = Field(default_factory=list)
+    consumption: List[ConsumptionLine] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
 
 
-class MaterialRequirement(BaseModel):
-    """Material needed for a stage (preview)."""
+class BatchAdvanceDto(BaseModel):
+    """Move `quantity` units from one stage to the next (consumes the target stage's BOM)."""
+    quantity: Decimal = Field(..., gt=0)
+    from_stage_id: Optional[int] = Field(None, gt=0, description="Defaults to the batch's current stage")
+    to_stage_id: Optional[int] = Field(None, gt=0, description="Defaults to the next recipe stage by sequence")
 
+
+class MovementHistoryLine(BaseModel):
+    from_stage_name: Optional[str] = None
+    to_stage_name: Optional[str] = None
+    quantity: Decimal
+    moved_at: datetime
+
+
+class ConsumptionHistoryLine(BaseModel):
+    stage_name: Optional[str] = None
+    raw_material_name: Optional[str] = None
+    qty_consumed: Decimal
+    new_qty: Optional[Decimal] = None
+    created_at: datetime
+
+
+class RejectHistoryLine(BaseModel):
+    stage_name: Optional[str] = None
+    quantity: Decimal
+    reason: Optional[str] = None
+    created_at: datetime
+
+
+class CompletionHistoryLine(BaseModel):
+    stage_name: Optional[str] = None
+    quantity: Decimal
+    created_at: datetime
+
+
+class BatchHistoryResponse(BaseModel):
+    movements: List[MovementHistoryLine] = Field(default_factory=list)
+    consumption: List[ConsumptionHistoryLine] = Field(default_factory=list)
+    rejects: List[RejectHistoryLine] = Field(default_factory=list)
+    completions: List[CompletionHistoryLine] = Field(default_factory=list)
+
+
+class BatchRejectDto(BaseModel):
+    """Record scrap of `quantity` units at a stage — shrinks that stage's WIP."""
+    quantity: Decimal = Field(..., gt=0)
+    stage_id: Optional[int] = Field(None, gt=0, description="Defaults to the batch's current stage")
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+class MaterialPreviewLine(BaseModel):
     raw_material_id: int
     raw_material_name: str
     unit_type: str
@@ -59,13 +149,57 @@ class MaterialRequirement(BaseModel):
     status: str  # "ok" | "low"
 
 
-class MaterialsPreviewResponse(BaseModel):
-    """Preview of materials needed for stage completion."""
-
-    product_part_no: str
-    product_name: str
-    variant: Optional[str] = None
-    stage_number: int
+class MaterialPreviewResponse(BaseModel):
+    """What moving `quantity` into `stage` would consume (no writes)."""
+    batch_id: int
+    stage_id: int
+    stage_name: str
     quantity: Decimal
-    materials: List[MaterialRequirement]
-    previous_stage_qty: Optional[Decimal] = None  # If stage > 1
+    materials: List[MaterialPreviewLine] = Field(default_factory=list)
+
+
+class BatchPaginatedResponse(BaseModel):
+    items: List[BatchResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_more: bool
+
+    class Config:
+        from_attributes = True
+
+
+class RegisterJobLine(BaseModel):
+    """One completed job in the Production Register."""
+    id: int
+    batch_no: str
+    product_id: int
+    product_part_no: Optional[str] = None
+    product_name: Optional[str] = None
+    colour: Optional[str] = None
+    quantity: Decimal
+    completed_at: datetime
+    created_at: datetime
+    cycle_days: Optional[float] = None   # completed_at - created_at, in days
+    total_rejected: Decimal = Decimal("0")
+
+
+class RegisterStatsResponse(BaseModel):
+    """Summary stats for the Production Register header tiles."""
+    jobs_this_month: int
+    units_this_month: Decimal
+    jobs_all_time: int
+    units_all_time: Decimal
+    avg_cycle_days: Optional[float] = None
+    total_rejected_all_time: Decimal = Decimal("0")
+
+
+class RegisterResponse(BaseModel):
+    stats: RegisterStatsResponse
+    items: List[RegisterJobLine]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_more: bool

@@ -1,12 +1,12 @@
 """
-Products service. find_all with powerful search; get_bom uses BOM module.
+Products service. Master-data CRUD with search, pagination, and field options.
+(Recipe/BOM lives in the BOM module.)
 """
 
 from typing import Dict, List, Optional
 from sqlalchemy import select, or_, union_all, literal
 from sqlalchemy.orm import Session
 from datetime import datetime
-from decimal import Decimal
 
 from app.core.db.engine import run_db
 from app.core.exceptions import ConflictError, NotFoundError
@@ -17,14 +17,9 @@ from app.modules.products.schemas import (
     ProductCreateDto,
     ProductUpdateDto,
     ProductResponse,
-    ProductDetailResponse,
-    BOMLineResponse,
     BulkItemResult,
     BulkCreateResponse,
 )
-from app.modules.bom.models import BOMLine
-from app.modules.raw_materials.models import RawMaterial
-from app.modules.bom.service import BOMService as BOMServiceRef
 
 
 ALLOWED_FIELD_OPTIONS_FIELDS = ("category", "group", "unit_of_measure", "model_name")
@@ -43,6 +38,8 @@ def _to_response(row: Product) -> ProductResponse:
         part_no=row.part_no,
         model_name=row.model_name,
         is_active=row.is_active,
+        is_manufactured=row.is_manufactured,
+        is_component=row.is_component,
         product_image=row.product_image,
         distributor_price=row.distributor_price,
         dealer_price=row.dealer_price,
@@ -66,6 +63,7 @@ class ProductService:
             )
             if existing.scalars().first():
                 raise ConflictError("Product already exists with this part_no")
+            now = datetime.utcnow()
             row = Product(
                 name=normalize_unicode(dto.name) or dto.name,
                 category=normalize_unicode(dto.category) if dto.category else dto.category,
@@ -77,15 +75,18 @@ class ProductService:
                 part_no=dto.part_no,
                 model_name=normalize_unicode(dto.model_name) if dto.model_name else dto.model_name,
                 is_active=dto.is_active,
+                is_manufactured=dto.is_manufactured,
+                is_component=dto.is_component,
                 product_image=dto.product_image,
                 distributor_price=dto.distributor_price,
                 dealer_price=dto.dealer_price,
                 retail_price=dto.retail_price,
                 unit_of_measure=normalize_unicode(dto.unit_of_measure) if dto.unit_of_measure else dto.unit_of_measure,
+                created_at=now,
+                updated_at=now,
             )
             db.add(row)
             db.flush()
-            db.refresh(row)
             return _to_response(row)
 
         return await run_db(_create)
@@ -138,6 +139,8 @@ class ProductService:
                         part_no=dto.part_no,
                         model_name=normalize_unicode(dto.model_name) if dto.model_name else dto.model_name,
                         is_active=dto.is_active,
+                        is_manufactured=dto.is_manufactured,
+                        is_component=dto.is_component,
                         product_image=dto.product_image,
                         distributor_price=dto.distributor_price,
                         dealer_price=dto.dealer_price,
@@ -285,93 +288,6 @@ class ProductService:
         return await run_db(_find)
 
     @staticmethod
-    async def find_one_with_bom(
-        product_id: int, variant: Optional[str] = None
-    ) -> ProductDetailResponse:
-        """Product by id with BOM grouped by variant."""
-        def _find(db: Session) -> ProductDetailResponse:
-            row = db.execute(
-                select(Product).where(
-                    Product.id == product_id,
-                    Product.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
-            if not row:
-                raise NotFoundError("Product", product_id)
-            base = _to_response(row)
-
-            bom_query = (
-                select(BOMLine, RawMaterial.name)
-                .join(RawMaterial, BOMLine.raw_material_id == RawMaterial.id)
-                .where(
-                    BOMLine.product_id == product_id,
-                    BOMLine.deleted_at.is_(None),
-                    RawMaterial.deleted_at.is_(None),
-                )
-                .order_by(BOMLine.product_id, BOMLine.variant, BOMLine.id)
-            )
-            bom_rows = db.execute(bom_query).all()
-
-            bom_by_variant: dict = {}
-            for line, rm_name in bom_rows:
-                key = line.variant if line.variant else "Default"
-                bom_line = BOMLineResponse(
-                    raw_material_id=line.raw_material_id,
-                    raw_material_name=rm_name,
-                    variant=line.variant,
-                    batch_qty=line.batch_qty,
-                    raw_qty=line.raw_qty,
-                )
-                if key not in bom_by_variant:
-                    bom_by_variant[key] = []
-                bom_by_variant[key].append(bom_line)
-
-            return ProductDetailResponse(**base.model_dump(), bom_by_variant=bom_by_variant)
-
-        return await run_db(_find)
-
-    @staticmethod
-    async def get_bom(
-        product_id: int, variant: Optional[str] = None
-    ) -> List[BOMLineResponse]:
-        """Get BOM for product (and optional variant) from BOM module."""
-        def _find(db: Session) -> List[BOMLineResponse]:
-            exists = db.execute(
-                select(Product.id).where(
-                    Product.id == product_id,
-                    Product.deleted_at.is_(None),
-                )
-            ).scalar_one_or_none()
-            if not exists:
-                raise NotFoundError("Product", product_id)
-
-            bom_query = (
-                select(BOMLine, RawMaterial.name)
-                .join(RawMaterial, BOMLine.raw_material_id == RawMaterial.id)
-                .where(
-                    BOMLine.product_id == product_id,
-                    BOMLine.deleted_at.is_(None),
-                    RawMaterial.deleted_at.is_(None),
-                )
-            )
-            if variant is not None:
-                bom_query = bom_query.where(BOMLine.variant == variant)
-            bom_query = bom_query.order_by(BOMLine.product_id, BOMLine.variant, BOMLine.id)
-            rows = db.execute(bom_query).all()
-            return [
-                BOMLineResponse(
-                    raw_material_id=line.raw_material_id,
-                    raw_material_name=rm_name,
-                    variant=line.variant,
-                    batch_qty=line.batch_qty,
-                    raw_qty=line.raw_qty,
-                )
-                for line, rm_name in rows
-            ]
-
-        return await run_db(_find)
-
-    @staticmethod
     async def update(product_id: int, dto: ProductUpdateDto) -> ProductResponse:
         def _update(db: Session) -> ProductResponse:
             result = db.execute(
@@ -389,8 +305,8 @@ class ProductService:
                 if k in text_fields and isinstance(v, str):
                     v = normalize_unicode(v) or v
                 setattr(row, k, v)
+            row.updated_at = datetime.utcnow()
             db.flush()
-            db.refresh(row)
             return _to_response(row)
 
         return await run_db(_update)

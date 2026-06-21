@@ -4,7 +4,7 @@ PORT=8002
 ALEMBIC=alembic
 ALEMBIC_CONFIG=alembic.ini
 
-# Run FastAPI server
+# Run FastAPI server (against Turso)
 run:
 	uvicorn $(APP_MODULE) --host $(HOST) --port $(PORT) --reload
 

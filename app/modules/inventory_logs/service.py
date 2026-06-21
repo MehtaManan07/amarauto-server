@@ -1,5 +1,6 @@
 """Inventory log service - create and fetch logs."""
 
+from datetime import datetime
 from typing import List
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,6 +26,7 @@ class InventoryLogService:
         """Create an inventory log entry."""
 
         def _create(db: Session) -> InventoryLogResponse:
+            now = datetime.utcnow()
             log = InventoryLog(
                 raw_material_id=raw_material_id,
                 user_id=user_id,
@@ -33,10 +35,11 @@ class InventoryLogService:
                 previous_qty=previous_qty,
                 new_qty=new_qty,
                 notes=notes,
+                created_at=now,
+                updated_at=now,
             )
             db.add(log)
             db.flush()
-            db.refresh(log)
             return InventoryLogResponse(
                 id=log.id,
                 raw_material_id=log.raw_material_id,

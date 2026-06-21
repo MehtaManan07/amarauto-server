@@ -12,10 +12,8 @@ from .schemas import (
     ProductCreateDto,
     ProductUpdateDto,
     ProductResponse,
-    ProductDetailResponse,
     ProductPaginatedResponse,
     ProductFieldOptionsResponse,
-    BOMLineResponse,
     BulkCreateResponse,
 )
 
@@ -69,23 +67,13 @@ async def get_product_field_options(
     return ProductFieldOptionsResponse(**data)
 
 
-@router.get("/{product_id}/bom", response_model=List[BOMLineResponse])
-async def get_product_bom(
-    product_id: int,
-    variant: Optional[str] = Query(None, description="BOM variant e.g. colour"),
-    current_user: TokenData = Depends(require_any_role),
-):
-    """Get BOM for product. Returns empty list until BOM module is implemented."""
-    return await ProductService.get_bom(product_id, variant=variant)
-
-
-@router.get("/{product_id}", response_model=ProductDetailResponse)
+@router.get("/{product_id}", response_model=ProductResponse)
 async def get_product(
     product_id: int,
     current_user: TokenData = Depends(require_any_role),
 ):
-    """Get product by id (with BOM; BOM empty until BOM module exists)."""
-    return await ProductService.find_one_with_bom(product_id)
+    """Get product by id. (Recipe/BOM is served by the BOM module.)"""
+    return await ProductService.find_one(product_id)
 
 
 @router.patch("/{product_id}", response_model=ProductResponse)

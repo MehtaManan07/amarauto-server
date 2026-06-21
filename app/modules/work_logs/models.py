@@ -1,5 +1,10 @@
 """
-Work log model - tracks worker production: who did which operation on which product.
+Work log model - a piece-rate labor record: a worker did `quantity` of an operation.
+
+Anchored on `operation_id` (which resolves product, component, stage, sequence, side, rate).
+`rate` and `total_amount` are SNAPSHOTS at create time so later rate changes never rewrite
+payroll. batch_id/stage_id tie the labor to a production batch when known (defaulted in UI),
+but a work log can also stand alone (operation + worker + qty + date is the minimum).
 """
 
 from sqlalchemy import Date, Numeric, Integer, String, ForeignKey, Text
@@ -12,25 +17,35 @@ from app.core.db.base import BaseModel
 
 
 class WorkLog(BaseModel):
-    """
-    One work log entry: worker completed quantity of operation on product on date.
-    rate and total_amount are snapshots at create time for payroll accuracy.
-    """
+    """One labor entry. Pay = quantity * rate (snapshotted)."""
 
     __tablename__ = "work_logs"
 
-    user_id: Mapped[int] = mapped_column(
+    worker_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    job_rate_id: Mapped[int] = mapped_column(
+    operation_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("job_rates.id", ondelete="CASCADE"),
+        ForeignKey("operations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
+    batch_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("batches.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    stage_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("stages.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    variant: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     work_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     start_time: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)  # HH:MM
     end_time: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)  # HH:MM
